@@ -425,6 +425,9 @@ def generate_prediction_chart(
         for idx, year in enumerate(years)
     )
 
+    x_axis_y = margin + plot_height
+    y_axis_x = margin
+
     y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
     tick_elements = []
     grid_lines = []
