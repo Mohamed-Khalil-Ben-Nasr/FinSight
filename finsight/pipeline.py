@@ -557,15 +557,15 @@ def generate_prediction_chart(
     output_dir: str = "artifacts",
     min_points_per_year: int = 100,
 ) -> Optional[str]:
-    """Render an informative SVG comparing actual vs. predicted returns.
-
-    When high-frequency candles are available we plot the entire 2015–2022 history
-    so each year contributes well over 100 data points. If that feed is missing,
-    we gracefully fall back to the prior annual-only layout.
-    """
+    """Render the requested 2020–2022 Actual vs. Predicted line chart."""
 
     if not details:
         return None
+
+    # These parameters remain in the signature for backward compatibility with
+    # earlier dense-chart pipelines but are intentionally ignored now that the
+    # user requested a focused 2020–2022 view.
+    _ = (chart_records, min_points_per_year)
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -573,206 +573,167 @@ def generate_prediction_chart(
 
     predictions = predictions or {int(row["Year"]): float(row["prediction"]) for row in details}
 
-    if chart_records:
-        try:
-            return _render_dense_chart(
-                details,
-                evaluation,
-                chart_records,
-                predictions,
-                chart_path,
-                min_points_per_year=min_points_per_year,
-            )
-        except Exception:  # pragma: no cover - fallback for malformed datasets
-            pass
-
-    return _render_annual_chart(details, evaluation, predictions, chart_path)
-
-
-def _group_records_by_year(records: Sequence[Dict[str, Any]]) -> Dict[int, List[Tuple[dt.date, float]]]:
-    grouped: Dict[int, List[Tuple[dt.date, float]]] = {}
-    for record in records:
-        date_str = record.get("Date")
-        close_value = record.get("Close") or record.get("close")
-        if not date_str or close_value is None:
-            continue
-        try:
-            date_obj = dt.date.fromisoformat(str(date_str))
-        except ValueError:
-            continue
-        try:
-            close = float(close_value)
-        except (TypeError, ValueError):
-            continue
-        grouped.setdefault(date_obj.year, []).append((date_obj, close))
-    for year in grouped:
-        grouped[year].sort(key=lambda pair: pair[0])
-    return grouped
-
-
-def _normalize_yearly_returns(
-    grouped: Dict[int, List[Tuple[dt.date, float]]], min_points_per_year: int
-) -> Dict[int, List[Tuple[dt.date, float]]]:
-    normalized: Dict[int, List[Tuple[dt.date, float]]] = {}
-    for year, series in grouped.items():
-        if len(series) < min_points_per_year:
-            continue
-        first_close = series[0][1]
-        if first_close == 0:
-            continue
-        normalized[year] = [
-            (date, (close / first_close) - 1.0)
-            for date, close in series
-        ]
-    return normalized
-
-
-def _render_dense_chart(
-    details: Sequence[Dict[str, float]],
-    evaluation: Optional[Dict[str, object]],
-    chart_records: Sequence[Dict[str, Any]],
-    predictions: Dict[int, float],
-    chart_path: Path,
-    *,
-    min_points_per_year: int,
-) -> Optional[str]:
-    grouped = _group_records_by_year(chart_records)
-    normalized = _normalize_yearly_returns(grouped, min_points_per_year)
-    if not normalized:
+    filtered_years = [year for year in sorted(predictions) if 2020 <= year <= 2022]
+    if not filtered_years:
         return None
 
-    all_values = [value for series in normalized.values() for _, value in series]
-    all_values.extend(predictions.get(int(row["Year"]), 0.0) for row in details)
-    max_abs_value = max(max(abs(value) for value in all_values), 1e-6)
+    actual_values = {int(row["Year"]): float(row["Avg_Return"]) for row in details}
+    actual_series = [actual_values.get(year, float("nan")) for year in filtered_years]
+    predicted_series = [predictions.get(year, float("nan")) for year in filtered_years]
 
-    width, height = 900, 640
-    margin_top = 120
-    margin_bottom = 190
+    return _render_prediction_window_chart(
+        filtered_years,
+        actual_series,
+        predicted_series,
+        evaluation,
+        chart_path,
+    )
+
+
+
+
+def _render_prediction_window_chart(
+    years: Sequence[int],
+    actual_values: Sequence[float],
+    predicted_values: Sequence[float],
+    evaluation: Optional[Dict[str, object]],
+    chart_path: Path,
+) -> Optional[str]:
+    if not years:
+        return None
+
+    width, height = 900, 620
+    margin_top = 110
+    margin_bottom = 170
     margin_left = 90
     margin_right = 80
     plot_width = width - margin_left - margin_right
     plot_height = height - margin_top - margin_bottom
 
-    all_dates = [date for series in normalized.values() for date, _ in series]
-    min_date = min(all_dates)
-    max_date = max(all_dates)
-    total_days = max((max_date - min_date).days, 1)
+    scaled_actual = [value * 100 for value in actual_values]
+    scaled_predicted = [value * 100 for value in predicted_values]
+    combined = [value for value in scaled_actual + scaled_predicted if not math.isnan(value)]
+    if not combined:
+        return None
 
-    def x_from_date(date: dt.date) -> float:
-        delta_days = (date - min_date).days
-        return margin_left + (delta_days / total_days) * plot_width
+    min_value = min(combined)
+    max_value = max(combined)
+    padding = max(5.0, (max_value - min_value) * 0.15)
+    min_value -= padding
+    max_value += padding
+    value_range = max(max_value - min_value, 1e-6)
+
+    x_positions = {
+        year: margin_left + idx * (plot_width / max(len(years) - 1, 1))
+        for idx, year in enumerate(years)
+    }
 
     def y_from_value(value: float) -> float:
-        vertical_center = margin_top + plot_height / 2
-        return vertical_center - (value / max_abs_value) * (plot_height / 2)
+        return margin_top + plot_height - ((value - min_value) / value_range) * plot_height
 
-    y_axis_x = margin_left
-    x_axis_y = margin_top + plot_height
+    y_axis = margin_left
+    x_axis = margin_top + plot_height
 
-    y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
-    tick_elements = []
+    y_ticks = 5
     grid_lines = []
-    for value in y_ticks:
+    y_tick_labels = []
+    for i in range(y_ticks + 1):
+        value = min_value + (value_range / y_ticks) * i
         y = y_from_value(value)
         grid_lines.append(
-            f'<line x1="{y_axis_x}" y1="{y:.2f}" x2="{width - margin_right}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>'
+            f"<line x1='{y_axis}' y1='{y:.2f}' x2='{width - margin_right}' y2='{y:.2f}' stroke='#e5e7eb' stroke-width='1'/>"
         )
-        tick_elements.append(
-            f'<line x1="{y_axis_x - 5}" y1="{y:.2f}" x2="{y_axis_x}" y2="{y:.2f}" stroke="#111" stroke-width="1"/>'
-        )
-        tick_elements.append(
-            f'<text x="{y_axis_x - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="#111">{value:.0%}</text>'
+        y_tick_labels.append(
+            f"<text x='{margin_left - 12}' y='{y + 4:.2f}' font-size='12' fill='#111827' text-anchor='end'>{value:.1f}%</text>"
         )
 
-    year_labels = []
-    for year, series in sorted(normalized.items()):
-        midpoint = series[len(series) // 2][0]
-        year_labels.append(
-            f'<text x="{x_from_date(midpoint):.2f}" y="{x_axis_y + 20:.2f}" text-anchor="middle" font-size="13" fill="#111">{year}</text>'
-        )
+    def _build_path(values: Sequence[float]) -> str:
+        commands = []
+        for idx, year in enumerate(years):
+            value = values[idx]
+            if math.isnan(value):
+                continue
+            x = x_positions[year]
+            y = y_from_value(value)
+            prefix = 'M' if not commands else 'L'
+            commands.append(f"{prefix}{x:.2f},{y:.2f}")
+        return ' '.join(commands)
 
-    actual_polylines = []
-    color_palette = ["#15803d", "#0f9d58", "#047857", "#059669"]
-    for idx, (year, series) in enumerate(sorted(normalized.items())):
-        color = color_palette[idx % len(color_palette)]
-        points = " ".join(f"{x_from_date(date):.2f},{y_from_value(value):.2f}" for date, value in series)
-        actual_polylines.append(
-            f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2" opacity="0.9"/>'
-        )
-        year_labels.append(
-            f'<text x="{x_from_date(series[-1][0]):.2f}" y="{y_from_value(series[-1][1]) - 8:.2f}" font-size="11" fill="{color}" text-anchor="end">{year} close {series[-1][1]:+.1%}</text>'
-        )
+    actual_path = _build_path(scaled_actual)
+    predicted_path = _build_path(scaled_predicted)
 
-    prediction_segments = []
-    for year, series in sorted(normalized.items()):
-        prediction_value = predictions.get(year)
-        if prediction_value is None:
-            continue
-        start_date = series[0][0]
-        end_date = series[-1][0]
-        y = y_from_value(prediction_value)
-        prediction_segments.append(
-            f'<line x1="{x_from_date(start_date):.2f}" y1="{y:.2f}" x2="{x_from_date(end_date):.2f}" y2="{y:.2f}" stroke="#b91c1c" stroke-width="2.5" stroke-dasharray="8 5"/>'
-        )
-        prediction_segments.append(
-            f'<text x="{(x_from_date(start_date) + x_from_date(end_date)) / 2:.2f}" y="{y - 6:.2f}" text-anchor="middle" font-size="11" fill="#b91c1c">Predicted {year}: {prediction_value:+.1%}</text>'
-        )
+    point_labels = []
+    point_markers = []
+    for idx, year in enumerate(years):
+        actual = scaled_actual[idx]
+        predicted = scaled_predicted[idx]
+        x = x_positions[year]
+        if not math.isnan(actual):
+            y = y_from_value(actual)
+            point_markers.append(
+                f"<circle cx='{x:.2f}' cy='{y:.2f}' r='4' fill='#047857' stroke='white' stroke-width='1'/>"
+            )
+            point_labels.append(
+                f"<text x='{x:.2f}' y='{y - 10:.2f}' font-size='12' fill='#065f46' text-anchor='middle'>Actual {year}: {actual:.1f}%</text>"
+            )
+        if not math.isnan(predicted):
+            y_pred = y_from_value(predicted)
+            point_markers.append(
+                f"<circle cx='{x:.2f}' cy='{y_pred:.2f}' r='4' fill='#dc2626' stroke='white' stroke-width='1'/>"
+            )
+            point_labels.append(
+                f"<text x='{x:.2f}' y='{y_pred + 18:.2f}' font-size='12' fill='#b91c1c' text-anchor='middle'>Pred {year}: {predicted:.1f}%</text>"
+            )
 
-    summary_lines: List[str] = []
-    if evaluation:
-        mae = evaluation.get("MAE")
-        hardest_year = evaluation.get("hardest_year")
-        reason = evaluation.get("hardest_year_reason")
-        if isinstance(mae, (int, float)):
-            summary_lines.append(f"MAE {mae:.2%}")
-        if hardest_year is not None:
-            summary_lines.append(f"Toughest year {hardest_year}: {reason}")
-    summary_text = " | ".join(summary_lines)
-
-    legend_y = x_axis_y + 80
-    legend = f"""
-        <g transform="translate({width/2 - 190:.2f}, {legend_y:.2f})">
-            <g>
-                <line x1="0" y1="6" x2="30" y2="6" stroke="#15803d" stroke-width="3"/>
-                <text x="40" y="9" fill="#111" font-size="12">Actual daily return (100+ pts/year)</text>
-            </g>
-            <g transform="translate(0, 24)">
-                <line x1="0" y1="6" x2="30" y2="6" stroke="#b91c1c" stroke-width="3" stroke-dasharray="8 5"/>
-                <text x="40" y="9" fill="#111" font-size="12">Annual prediction band</text>
-            </g>
-        </g>
-    """
-
-    summary_block = (
-        f'<text x="{width/2:.2f}" y="{legend_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
-        if summary_text
-        else ""
+    legend_y = margin_top + plot_height + 40
+    legend = (
+        f"<rect x='{margin_left}' y='{legend_y}' width='14' height='14' fill='#047857' />"
+        f"<text x='{margin_left + 22}' y='{legend_y + 12}' font-size='12' fill='#111827'>Actual return</text>"
+        f"<rect x='{margin_left + 160}' y='{legend_y}' width='14' height='14' fill='#dc2626' />"
+        f"<text x='{margin_left + 178}' y='{legend_y + 12}' font-size='12' fill='#111827'>Predicted return</text>"
     )
 
-    svg_header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-    title_y = 45
-    subtitle_y = title_y + 22
+    eval_text = ''
+    if evaluation:
+        mae = evaluation.get('MAE')
+        hardest_year = evaluation.get('hardest_year')
+        hardest_reason = evaluation.get('hardest_year_reason')
+        if mae is not None:
+            eval_text = f"MAE {float(mae):.2%} | Toughest year {hardest_year}: {hardest_reason}"
 
-    svg_content = svg_header + f"""
-    <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
-        <rect width="100%" height="100%" fill="#ffffff"/>
-        <text x="{width/2:.2f}" y="{title_y:.2f}" fill="#111" font-size="22" font-weight="600" text-anchor="middle">S&amp;P 500 Actual vs. FinSight Predictions</text>
-        <text x="{width/2:.2f}" y="{subtitle_y:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">Daily closes normalized per year (100+ samples each)</text>
-        {"".join(grid_lines)}
-        <line x1="{y_axis_x}" y1="{margin_top}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
-        <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin_right}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
-        <text x="{width/2:.2f}" y="{x_axis_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#111">Calendar timeline</text>
-        <text x="{40}" y="{(margin_top + plot_height/2):.2f}" transform="rotate(-90 {40} {(margin_top + plot_height/2):.2f})" text-anchor="middle" font-size="13" fill="#111">Return vs. Jan 1 of each year</text>
-        {"".join(tick_elements)}
-        {"".join(actual_polylines)}
-        {"".join(prediction_segments)}
-        {"".join(year_labels)}
-        {legend}
-        {summary_block}
-    </svg>
-    """
+    comments = (
+        f"<text x='{margin_left}' y='{legend_y + 40}' font-size='12' fill='#374151'>{eval_text}</text>"
+    )
 
-    chart_path.write_text("\n".join(line.strip() for line in svg_content.strip().splitlines()) + "\n")
+    x_labels = []
+    for year in years:
+        x = x_positions[year]
+        x_labels.append(
+            f"<text x='{x:.2f}' y='{x_axis + 20}' font-size='12' fill='#111827' text-anchor='middle'>{year}</text>"
+        )
+
+    svg_content = f"""<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>
+  <rect width='100%' height='100%' fill='white'/>
+  <text x='{width/2}' y='40' text-anchor='middle' font-size='24' fill='#111827' font-weight='600'>S&amp;P 500 Actual vs. FinSight Predictions</text>
+  <text x='{width/2}' y='70' text-anchor='middle' font-size='14' fill='#374151'>Annual returns focus (2020–2022 forecast window)</text>
+  <line x1='{margin_left}' y1='{margin_top}' x2='{margin_left}' y2='{margin_top + plot_height}' stroke='#111827' stroke-width='1.2'/>
+  <line x1='{margin_left}' y1='{x_axis}' x2='{margin_left + plot_width}' y2='{x_axis}' stroke='#111827' stroke-width='1.2'/>
+  {''.join(grid_lines)}
+  {''.join(y_tick_labels)}
+  {''.join(x_labels)}
+  <text x='{margin_left + plot_width / 2}' y='{x_axis + 50}' text-anchor='middle' font-size='13' fill='#374151'>Years</text>
+  <text x='20' y='{margin_top + plot_height / 2}' text-anchor='middle' font-size='13' fill='#374151' transform='rotate(-90 20,{margin_top + plot_height / 2})'>Annual return (%)</text>
+  <path d='{actual_path}' fill='none' stroke='#047857' stroke-width='2.5' />
+  <path d='{predicted_path}' fill='none' stroke='#dc2626' stroke-width='2.5' stroke-dasharray='8,6' />
+  {''.join(point_markers)}
+  {''.join(point_labels)}
+  {legend}
+  {comments}
+</svg>
+"""
+
+    chart_path.write_text(svg_content)
     return str(chart_path)
 
 
