@@ -9,7 +9,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 ## Current Status (Goal ✅ Achieved)
 - **Functional pipeline:** `python -m finsight.pipeline` runs end-to-end today, even on locked-down laptops, because it dynamically swaps between live `yfinance`/`pandas` pulls and the bundled dataset.
 - **LangChain orchestration:** The agents are wired together through `build_langchain_chain()` inside `finsight.pipeline`, so you can reuse the Runnable graph elsewhere or observe it via `scripts/run_langchain_workflow.py`.
-- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` and an `AgentOutput` structure that includes Finance Bro’s summary, Test Titan’s verdict, and Mr White’s tutorial—all based on the code committed in this repo.
+- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` **and** a nicely formatted `report.txt` that mirrors the `AgentOutput` structure (Finance Bro summary, Test Titan verdict, Mr White tutorial, vector-store status, etc.).
 - **Testing baked in:** Test Titan’s checks are part of the chain; the run only reports success after verifying data coverage, numeric metrics, and chart creation. When dependencies are installed, `pip install -r requirements.txt && python -m finsight.pipeline` demonstrates the full live-data path.
 
 ## Agent Overview
@@ -32,7 +32,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 4. **Evaluation + charting:** `evaluator_agent()` calculates MAE/error details and `generate_prediction_chart()` saves `artifacts/predictions_vs_actual.svg` so Finance Bro can reference the visualization.
 5. **Narration + refinement:** `finance_bro_agent()` turns the stats into a conversational summary while `refinement_agent()` proposes upgrades.
 6. **Quality gate:** `test_titan_agent()` confirms the dataset, predictions, and evaluation objects are sane before declaring “All tests passed ✅”.
-7. **Report packaging:** `run_pipeline()` executes a LangChain `Runnable` sequence that stitches every agent together and prints the consolidated `AgentOutput`, complete with Mr White’s explainer.
+7. **Report packaging:** `run_pipeline()` executes a LangChain `Runnable` sequence that stitches every agent together and saves the consolidated `AgentOutput` as `report.txt`, complete with Mr White’s explainer.
 
 ## Dataset Source & Quality
 - **Primary feed:** Daily ^GSPC candles from Yahoo Finance pulled through `yfinance`. This is a widely trusted public dataset with tight alignment to official S&P 500 closing levels, making it reliable for historical backtesting.
@@ -82,7 +82,16 @@ python -m finsight.pipeline
    ```bash
    python -m finsight.pipeline --pinecone-api-key "$PINECONE_API_KEY"
    ```
-4. Watch the terminal for the full agent-by-agent log, including Test Titan’s verdict, the Finance Bro summary that mentions the SVG path, and Mr White’s note about the LangChain + Pinecone setup.
+4. Open the freshly generated `report.txt` (in the project root) to read the formatted summary, which includes the evaluation table, Finance Bro’s notes, and Mr White’s LangChain + Pinecone explanation. The terminal now simply tells you where the file lives along with Test Titan’s `All tests passed ✅` line.
+
+### Using the Pinecone key you supplied
+You shared a live Pinecone Serverless key (`pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY`). Run the exact command below on macOS to hit the hosted index without touching your shell profile:
+
+```bash
+python3 -m finsight.pipeline \
+  --pinecone-api-key "pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY" \
+  --pinecone-region us-east-1
+```
 
 Prefer environment variables instead? Export `PINECONE_API_KEY` with that value once per terminal session and omit the CLI flags.
 
@@ -105,7 +114,7 @@ Prefer environment variables instead? Export `PINECONE_API_KEY` with that value 
 
 ## Viewing the Chart and Results
 - **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022.
-- **Agent report:** The console output printed by `python -m finsight.pipeline` contains the structured `AgentOutput` object. It lists the historical metrics, macro context, predictions with rationales, evaluation stats (including MAE and hardest year), Finance Bro’s explanation, refinement ideas, the absolute path to the chart, **and** the `vector_store_status` so you can cite whether Pinecone or the local replica supplied the memories.
+- **Agent report:** Every run writes `report.txt` with the structured `AgentOutput` object. It lists the historical metrics, macro context, predictions with rationales, evaluation stats (including MAE and hardest year), Finance Bro’s explanation, refinement ideas, the absolute path to the chart, **and** the `vector_store_status` so you can cite whether Pinecone or the local replica supplied the memories.
 - **Reusable data:** The cached dataset lives at `data/sp500_annual_metrics_2015_2022.json`, so you can reset or re-run the workflow offline anytime.
 
 Bring this README to your interview: it covers the pitch, the architecture, and exactly how to reproduce the results—including where to find the visual evidence.

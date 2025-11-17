@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
+from textwrap import indent
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # Optional heavy dependencies (gracefully skipped when unavailable)
@@ -387,7 +388,7 @@ def generate_prediction_chart(details: Sequence[Dict[str, float]], output_dir: s
     predictions = [row["prediction"] for row in details]
     max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
 
-    width, height = 720, 400
+    width, height = 720, 420
     margin = 60
     plot_width = width - 2 * margin
     plot_height = height - 2 * margin
@@ -409,23 +410,41 @@ def generate_prediction_chart(details: Sequence[Dict[str, float]], output_dir: s
 
     year_labels = "".join(
         f'<text x="{x_coord(idx):.2f}" y="{height - margin / 2:.2f}" text-anchor="middle" '
-        f'font-size="14">{year}</text>'
+        f'font-size="14" fill="#111">{year}</text>'
         for idx, year in enumerate(years)
     )
 
+    x_axis_y = height - margin
+    y_axis_x = margin
+
+    y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
+    tick_elements = []
+    for value in y_ticks:
+        y = y_coord(value)
+        tick_elements.append(
+            f'<line x1="{y_axis_x - 5}" y1="{y:.2f}" x2="{y_axis_x}" y2="{y:.2f}" stroke="#111" stroke-width="1"/>'
+        )
+        tick_elements.append(
+            f'<text x="{y_axis_x - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="#111">{value:.0%}</text>'
+        )
+    tick_elements_markup = "\n        ".join(tick_elements)
+
     svg_content = f"""
     <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
-        <rect width="100%" height="100%" fill="#0b0f19"/>
-        <line x1="{margin}" y1="{height/2:.2f}" x2="{width - margin}" y2="{height/2:.2f}" stroke="#555" stroke-dasharray="4 4"/>
-        <polyline points="{polyline(actual_points)}" fill="none" stroke="#4ade80" stroke-width="3"/>
-        <polyline points="{polyline(prediction_points)}" fill="none" stroke="#f87171" stroke-width="3" stroke-dasharray="6 4"/>
+        <rect width="100%" height="100%" fill="#ffffff"/>
+        <line x1="{y_axis_x}" y1="{margin}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        {tick_elements_markup}
+        <polyline points="{polyline(actual_points)}" fill="none" stroke="#15803d" stroke-width="3"/>
+        <polyline points="{polyline(prediction_points)}" fill="none" stroke="#b91c1c" stroke-width="3" stroke-dasharray="6 4"/>
         {year_labels}
-        <text x="{margin}" y="{margin}" fill="#fff" font-size="16">Actual vs. Predicted Returns</text>
-        <text x="{margin}" y="{margin + 20}" fill="#9ca3af" font-size="12">Positive values plot above the midline; negatives dip below.</text>
-        <rect x="{margin}" y="{height - margin + 10}" width="12" height="12" fill="#4ade80"/>
-        <text x="{margin + 20}" y="{height - margin + 20}" fill="#fff" font-size="12">Actual</text>
-        <rect x="{margin + 80}" y="{height - margin + 10}" width="12" height="12" fill="#f87171"/>
-        <text x="{margin + 100}" y="{height - margin + 20}" fill="#fff" font-size="12">Predicted</text>
+        <text x="{width/2:.2f}" y="{height - margin/4:.2f}" fill="#111" font-size="16" text-anchor="middle">Actual vs. Predicted Returns</text>
+        <g transform="translate({width/2 - 100:.2f}, {height - margin/4 + 20:.2f})">
+            <rect x="0" y="0" width="12" height="12" fill="#15803d"/>
+            <text x="20" y="10" fill="#111" font-size="12">Actual</text>
+            <rect x="90" y="0" width="12" height="12" fill="#b91c1c"/>
+            <text x="110" y="10" fill="#111" font-size="12">Predicted</text>
+        </g>
     </svg>
     """
 
@@ -701,6 +720,70 @@ def state_to_agent_output(state: Dict[str, object]) -> AgentOutput:
     )
 
 
+def format_agent_output(output: AgentOutput) -> str:
+    """Create a human-friendly summary for report.txt."""
+
+    def pct(value: float) -> str:
+        return f"{value:+.2%}"
+
+    lines: List[str] = []
+    lines.append("FinSight Multi-Agent Report")
+    lines.append("=" * 29)
+    lines.append(f"Data source: {output.data_source_report.source}")
+    lines.append(f"Source notes: {output.data_source_report.note}")
+    lines.append(f"Vector store status: {output.vector_store_status}")
+    if output.chart_path:
+        lines.append(f"Chart: {output.chart_path}")
+    lines.append("")
+
+    lines.append("Annual Metrics (2015-2022)")
+    lines.append("Year    Return     Volatility")
+    for metric in output.annual_metrics:
+        lines.append(f"{metric.year}    {pct(metric.avg_return):>8}   {pct(metric.volatility):>10}")
+    lines.append("")
+
+    lines.append("Context Highlights")
+    for year in sorted(output.context):
+        events = output.context[year]
+        bullet_block = "\n".join(f"- {event}" for event in events)
+        lines.append(f"{year}:\n" + indent(bullet_block, "  "))
+    lines.append("")
+
+    evaluation_details: Sequence[Dict[str, float]] = output.evaluation.get("details", [])  # type: ignore[assignment]
+    if evaluation_details:
+        lines.append("Predictions vs. Actuals")
+        lines.append("Year    Actual     Predicted    Error")
+        for row in evaluation_details:
+            lines.append(
+                f"{int(row['Year'])}    {pct(row['Avg_Return']):>8}   {pct(row['prediction']):>10}   {pct(row['error']):>8}"
+            )
+        lines.append("")
+
+    mae_value = output.evaluation.get("MAE")
+    if isinstance(mae_value, (int, float)):
+        mae_str = f"{mae_value:.2%}"
+    else:
+        mae_str = str(mae_value)
+    hardest_year = output.evaluation.get("hardest_year")
+    reason = output.evaluation.get("hardest_year_reason")
+    lines.append(f"MAE: {mae_str} (hardest year: {hardest_year} — {reason})")
+    lines.append("")
+
+    lines.append("Finance Bro")
+    lines.append(output.finance_bro_summary)
+    lines.append("")
+
+    lines.append("Refinement Suggestions")
+    lines.extend(f"- {suggestion}" for suggestion in output.refinement_suggestions)
+    lines.append("")
+
+    lines.append("Mr. White's Briefing")
+    lines.append(output.mr_white_briefing.strip())
+    lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def run_pipeline(
     stage_logger: Optional[StageLogger] = None,
     *,
@@ -749,4 +832,7 @@ if __name__ == "__main__":
         pinecone_region=args.pinecone_region,
         context_years=args.context_years,
     )
-    print(output)
+    report_text = format_agent_output(output)
+    report_path = Path(__file__).resolve().parent.parent / "report.txt"
+    report_path.write_text(report_text)
+    print(f"Report written to {report_path}")
