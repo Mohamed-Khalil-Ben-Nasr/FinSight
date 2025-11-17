@@ -397,6 +397,10 @@ def generate_prediction_chart(
     margin_bottom = 90
     margin_left = 90
     margin_right = 70
+    # "margin" previously referred to the top margin before we refined the layout.
+    # Keep a backwards-compatible alias so older references (or partially updated
+    # environments) never raise a NameError during chart generation.
+    margin = margin_top
     plot_width = width - margin_left - margin_right
     plot_height = height - margin_top - margin_bottom
 
