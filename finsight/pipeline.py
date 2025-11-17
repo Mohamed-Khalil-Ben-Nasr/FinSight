@@ -499,7 +499,7 @@ def generate_prediction_chart(
     svg_content = svg_header + f"""
     <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#ffffff"/>
-        <text x="{width/2:.2f}" y="{margin/2:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&P 500 Actual vs. FinSight Predictions</text>
+        <text x="{width/2:.2f}" y="{margin/2:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&amp;P 500 Actual vs. FinSight Predictions</text>
         <text x="{width/2:.2f}" y="{margin/2 + 20:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">2015-2022 annual returns with error connectors</text>
         {grid_lines_markup}
         <line x1="{y_axis_x}" y1="{margin}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
