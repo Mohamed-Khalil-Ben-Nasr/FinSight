@@ -9,7 +9,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 ## Current Status (Goal ✅ Achieved)
 - **Functional pipeline:** `python -m finsight.pipeline` runs end-to-end today, even on locked-down laptops, because it dynamically swaps between live `yfinance`/`pandas` pulls and the bundled dataset.
 - **LangChain orchestration:** The agents are wired together through `build_langchain_chain()` inside `finsight.pipeline`, so you can reuse the Runnable graph elsewhere or observe it via `scripts/run_langchain_workflow.py`.
-- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` **and** a nicely formatted `report.txt` that mirrors the `AgentOutput` structure (Finance Bro summary, Test Titan verdict, Mr White tutorial, vector-store status, etc.).
+- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` **and** a nicely formatted `report.txt` that mirrors the `AgentOutput` structure (Finance Bro summary, Test Titan verdict, Mr White tutorial, vector-store status, etc.). The SVG now includes a legend, annotations for each data point, MAE + toughest year callouts, and connector lines that make the misses easy to see at a glance.
 - **Testing baked in:** Test Titan’s checks are part of the chain; the run only reports success after verifying data coverage, numeric metrics, and chart creation. When dependencies are installed, `pip install -r requirements.txt && python -m finsight.pipeline` demonstrates the full live-data path.
 
 ## Agent Overview
@@ -29,7 +29,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 1. **Data ingestion:** `collect_sp500_data()` pulls ^GSPC history via `yfinance`/`pandas`. When those heavy deps are missing or the network is blocked, the function automatically switches to the bundled JSON snapshot (`data/sp500_annual_metrics_2015_2022.json`).
 2. **Context enrichment:** `research_macro_events()` writes the Research Agent’s 2015–2019 story beats into a Pinecone `finsight-market-events` vector index (or an offline in-memory replica) and hands the retrieved context to `build_prediction_payload()`.
 3. **Forecasting:** `prediction_agent()` applies a heuristic baseline plus contextual adjustments to produce 2020–2022 returns and rationales.
-4. **Evaluation + charting:** `evaluator_agent()` calculates MAE/error details and `generate_prediction_chart()` saves `artifacts/predictions_vs_actual.svg` so Finance Bro can reference the visualization.
+4. **Evaluation + charting:** `evaluator_agent()` calculates MAE/error details and `generate_prediction_chart()` saves `artifacts/predictions_vs_actual.svg`, rendering labeled axes, percent annotations, a centered legend, and a MAE/toughest-year summary block so the visual matches the written explanation.
 5. **Narration + refinement:** `finance_bro_agent()` turns the stats into a conversational summary while `refinement_agent()` proposes upgrades.
 6. **Quality gate:** `test_titan_agent()` confirms the dataset, predictions, and evaluation objects are sane before declaring “All tests passed ✅”.
 7. **Report packaging:** `run_pipeline()` executes a LangChain `Runnable` sequence that stitches every agent together and saves the consolidated `AgentOutput` as `report.txt`, complete with Mr White’s explainer.
@@ -113,7 +113,7 @@ Prefer environment variables instead? Export `PINECONE_API_KEY` with that value 
 - After that, re-run `python -m finsight.pipeline` (or `python3 -m ...` on macOS). The pipeline will either connect to Pinecone Serverless when `PINECONE_API_KEY` is set or report `vector_store_status=pinecone_local_memory:import_error:ModuleNotFoundError` if it must fall back to the deterministic local store.
 
 ## Viewing the Chart and Results
-- **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022.
+- **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022. The refreshed design uses a white background, grid lines, colored markers, dashed connectors showing the prediction error per year, and a legend/summary footer that highlights MAE plus the toughest year so the story is visually self-contained.
 - **Agent report:** Every run writes `report.txt` with the structured `AgentOutput` object. It lists the historical metrics, macro context, predictions with rationales, evaluation stats (including MAE and hardest year), Finance Bro’s explanation, refinement ideas, the absolute path to the chart, **and** the `vector_store_status` so you can cite whether Pinecone or the local replica supplied the memories.
 - **Reusable data:** The cached dataset lives at `data/sp500_annual_metrics_2015_2022.json`, so you can reset or re-run the workflow offline anytime.
 

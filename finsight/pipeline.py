@@ -373,8 +373,12 @@ def evaluator_agent(predictions: Dict[int, float], annual_metrics: Sequence[Annu
     return evaluation
 
 
-def generate_prediction_chart(details: Sequence[Dict[str, float]], output_dir: str = "artifacts") -> Optional[str]:
-    """Render a simple SVG line chart comparing actual vs. predicted returns."""
+def generate_prediction_chart(
+    details: Sequence[Dict[str, float]],
+    evaluation: Optional[Dict[str, object]] = None,
+    output_dir: str = "artifacts",
+) -> Optional[str]:
+    """Render an informative SVG comparing actual vs. predicted returns."""
 
     if not details:
         return None
@@ -388,8 +392,8 @@ def generate_prediction_chart(details: Sequence[Dict[str, float]], output_dir: s
     predictions = [row["prediction"] for row in details]
     max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
 
-    width, height = 720, 420
-    margin = 60
+    width, height = 780, 480
+    margin = 70
     plot_width = width - 2 * margin
     plot_height = height - 2 * margin
 
@@ -419,32 +423,94 @@ def generate_prediction_chart(details: Sequence[Dict[str, float]], output_dir: s
 
     y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
     tick_elements = []
+    grid_lines = []
     for value in y_ticks:
         y = y_coord(value)
+        grid_lines.append(
+            f'<line x1="{y_axis_x}" y1="{y:.2f}" x2="{width - margin}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
         tick_elements.append(
             f'<line x1="{y_axis_x - 5}" y1="{y:.2f}" x2="{y_axis_x}" y2="{y:.2f}" stroke="#111" stroke-width="1"/>'
         )
         tick_elements.append(
             f'<text x="{y_axis_x - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="#111">{value:.0%}</text>'
         )
+    for idx, _ in enumerate(years):
+        x = x_coord(idx)
+        grid_lines.append(
+            f'<line x1="{x:.2f}" y1="{margin}" x2="{x:.2f}" y2="{x_axis_y}" stroke="#f3f4f6" stroke-width="1"/>'
+        )
     tick_elements_markup = "\n        ".join(tick_elements)
+    grid_lines_markup = "\n        ".join(grid_lines)
+
+    def point_annotations(points: List[Tuple[float, float]], values: List[float], color: str) -> str:
+        circles = []
+        for (x, y), value in zip(points, values):
+            circles.append(
+                f'<g>'
+                f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="{color}" stroke="#ffffff" stroke-width="2"/>'
+                f'<text x="{x:.2f}" y="{y - 10:.2f}" text-anchor="middle" font-size="12" fill="{color}">{value:.1%}</text>'
+                f'</g>'
+            )
+        return "\n        ".join(circles)
+
+    connectors = "\n        ".join(
+        f'<line x1="{x_coord(idx):.2f}" y1="{y_coord(actuals[idx]):.2f}" '
+        f'x2="{x_coord(idx):.2f}" y2="{y_coord(predictions[idx]):.2f}" stroke="#9ca3af" stroke-dasharray="4 4"/>'
+        for idx in range(len(years))
+    )
+
+    summary_lines: List[str] = []
+    if evaluation:
+        mae = evaluation.get("MAE")
+        hardest_year = evaluation.get("hardest_year")
+        reason = evaluation.get("hardest_year_reason")
+        if mae is not None:
+            summary_lines.append(f"MAE {mae:.2%}")
+        if hardest_year is not None:
+            summary_lines.append(f"Toughest year {hardest_year}: {reason}")
+    summary_text = " | ".join(summary_lines)
+
+    legend = f"""
+        <g transform="translate({width/2 - 150:.2f}, {height - margin/4 + 25:.2f})">
+            <g>
+                <line x1="0" y1="6" x2="24" y2="6" stroke="#15803d" stroke-width="3"/>
+                <circle cx="12" cy="6" r="4" fill="#15803d" stroke="#fff" stroke-width="1.5"/>
+                <text x="36" y="9" fill="#111" font-size="12">Actual annual return</text>
+            </g>
+            <g transform="translate(0, 24)">
+                <line x1="0" y1="6" x2="24" y2="6" stroke="#b91c1c" stroke-width="3" stroke-dasharray="6 4"/>
+                <circle cx="12" cy="6" r="4" fill="#b91c1c" stroke="#fff" stroke-width="1.5"/>
+                <text x="36" y="9" fill="#111" font-size="12">Prediction from FinSight</text>
+            </g>
+        </g>
+    """
+
+    summary_block = (
+        f'<text x="{width/2:.2f}" y="{height - margin/4 + 90:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
+        if summary_text
+        else ""
+    )
 
     svg_content = f"""
     <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#ffffff"/>
+        <text x="{width/2:.2f}" y="{margin/2:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&P 500 Actual vs. FinSight Predictions</text>
+        <text x="{width/2:.2f}" y="{margin/2 + 20:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">2015-2022 annual returns with error connectors</text>
+        {grid_lines_markup}
         <line x1="{y_axis_x}" y1="{margin}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
         <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <text x="{width/2:.2f}" y="{height - 5:.2f}" text-anchor="middle" font-size="13" fill="#111">Year</text>
+        <text x="{15}" y="{height/2:.2f}" transform="rotate(-90 {15} {height/2:.2f})" text-anchor="middle" font-size="13" fill="#111">Annual return</text>
         {tick_elements_markup}
+        {connectors}
         <polyline points="{polyline(actual_points)}" fill="none" stroke="#15803d" stroke-width="3"/>
         <polyline points="{polyline(prediction_points)}" fill="none" stroke="#b91c1c" stroke-width="3" stroke-dasharray="6 4"/>
+        {point_annotations(actual_points, actuals, '#15803d')}
+        {point_annotations(prediction_points, predictions, '#b91c1c')}
         {year_labels}
-        <text x="{width/2:.2f}" y="{height - margin/4:.2f}" fill="#111" font-size="16" text-anchor="middle">Actual vs. Predicted Returns</text>
-        <g transform="translate({width/2 - 100:.2f}, {height - margin/4 + 20:.2f})">
-            <rect x="0" y="0" width="12" height="12" fill="#15803d"/>
-            <text x="20" y="10" fill="#111" font-size="12">Actual</text>
-            <rect x="90" y="0" width="12" height="12" fill="#b91c1c"/>
-            <text x="110" y="10" fill="#111" font-size="12">Predicted</text>
-        </g>
+        {legend}
+        {summary_block}
     </svg>
     """
 
@@ -596,8 +662,9 @@ def _evaluation_step(state: Dict[str, object]) -> Dict[str, object]:
 
 
 def _chart_step(state: Dict[str, object]) -> Dict[str, object]:
-    details: Sequence[Dict[str, float]] = state["evaluation"]["details"]  # type: ignore[index]
-    state["chart_path"] = generate_prediction_chart(details)
+    evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
+    details: Sequence[Dict[str, float]] = evaluation["details"]  # type: ignore[index]
+    state["chart_path"] = generate_prediction_chart(details, evaluation)
     return state
 
 
