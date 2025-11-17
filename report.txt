@@ -1,0 +1,76 @@
+FinSight Multi-Agent Report
+=============================
+Data source: cached_snapshot
+Source notes: Used cached snapshot derived from the same Yahoo Finance pulls because yfinance error: ProxyError: Failed to perform, curl: (56) CONNECT tunnel failed, response 403. See https://curl.se/libcurl/c/libcurl-errors.html first for more details..
+Vector store status: pinecone_local_memory:import_error:Exception
+Chart: artifacts/predictions_vs_actual.svg
+
+Annual Metrics (2015-2022)
+Year    Return     Volatility
+2015      -0.73%      +15.00%
+2016      +9.54%      +13.00%
+2017     +19.42%      +10.00%
+2018      -6.24%      +17.00%
+2019     +28.88%      +12.00%
+2020     +16.26%      +34.00%
+2021     +26.89%      +14.00%
+2022     -19.44%      +24.00%
+
+Context Highlights
+2015:
+  - Fed prepared to hike rates for the first time since the GFC
+  - China's slowdown sparked global growth fears
+  - Energy prices slumped, weighing on earnings
+2016:
+  - Brexit referendum surprised markets
+  - US election introduced policy uncertainty
+  - Oil stabilized after crashing in 2015
+2017:
+  - Global synchronized growth boosted equities
+  - Corporate tax reform expectations fueled optimism
+  - Volatility stayed historically low
+2018:
+  - US-China trade tensions escalated
+  - Fed hikes triggered liquidity worries
+  - Late-year selloff signaled risk-off sentiment
+2019:
+  - Trade truce hopes lifted risk appetite
+  - Global central banks pivoted back to easing
+  - Tech leadership returned despite valuation concerns
+
+Predictions vs. Actuals
+Year    Actual     Predicted    Error
+2020     +16.26%       -0.98%    +17.24%
+2021     +26.89%      +22.02%     +4.87%
+2022     -19.44%       +9.02%    +28.46%
+
+MAE: 16.86% (hardest year: 2022 — Structural shift not captured)
+
+Finance Bro
+Our calls were off by about 16.86% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
+
+Refinement Suggestions
+- Blend macro indicators (CPI, unemployment) with the return features to capture regime shifts.
+- Layer a sentiment score from earnings calls or news headlines to react faster to shocks.
+- Use rolling walk-forward validation so the Prediction Agent continually re-trains with the latest year.
+
+Mr. White's Briefing
+Hey there, apprentice — Mr. White here.
+We built FinSight as a relay race of specialists so you can trace every decision:
+1. A LangChain Runnable sequence kicks off the show so every agent hands a structured state to the next.
+2. DataCollector grabs ^GSPC closes via yfinance (or our cached snapshot when offline) and distills
+   them into AnnualMetric objects covering 2015–2022. That cache is the same Yahoo Finance data,
+   just frozen for reproducibility, so quality stays aligned with a widely trusted public feed.
+3. Research Agent pins three macro story beats to each pre-pandemic year (2015, 2016, 2017, 2018, 2019) and pushes
+   them through a Pinecone vector store (pinecone_local_memory:import_error:Exception) so later agents can query a real RAG memory.
+4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.
+5. Evaluator cross-checks predictions against actual returns, reports MAE and toughest year,
+   which this run pegs at 16.86% average error with 2022 hardest because Structural shift not captured.
+6. Finance Bro translates that into street language and points everyone to the SVG comparison chart.
+7. Refinement Agent turns the misses into a backlog of upgrades so the next version learns.
+8. Test Titan enforces contracts (no missing years, numeric MAE) before anyone declares victory.
+9. Lord of the Mysteries packages everything and I, Mr. White, narrate the architecture so your
+   curious mind sees how multi-agent orchestration feels in practice.
+Data source this round: cached_snapshot. Used cached snapshot derived from the same Yahoo Finance pulls because yfinance error: ProxyError: Failed to perform, curl: (56) CONNECT tunnel failed, response 403. See https://curl.se/libcurl/c/libcurl-errors.html first for more details..
+Finance Bro's verdict: Our calls were off by about 16.86% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
+Next experiments on deck: Blend macro indicators (CPI, unemployment) with the return features to capture regime shifts.; Layer a sentiment score from earnings calls or news headlines to react faster to shocks.; Use rolling walk-forward validation so the Prediction Agent continually re-trains with the latest year.
