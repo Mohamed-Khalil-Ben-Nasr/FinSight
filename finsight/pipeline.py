@@ -393,18 +393,21 @@ def generate_prediction_chart(
     max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
 
     width, height = 820, 560
-    margin = 70
-    plot_width = width - 2 * margin
-    plot_height = height - 2 * margin - 80  # leave breathing room for legend + summary
+    margin_top = 110
+    margin_bottom = 90
+    margin_left = 90
+    margin_right = 70
+    plot_width = width - margin_left - margin_right
+    plot_height = height - margin_top - margin_bottom
 
     def x_coord(index: int) -> float:
         if len(years) == 1:
-            return margin + plot_width / 2
+            return margin_left + plot_width / 2
         step = plot_width / (len(years) - 1)
-        return margin + index * step
+        return margin_left + index * step
 
     def y_coord(value: float) -> float:
-        vertical_center = margin + plot_height / 2
+        vertical_center = margin_top + plot_height / 2
         return vertical_center - (value / max_abs_value) * (plot_height / 2)
 
     def polyline(points: List[Tuple[float, float]]) -> str:
@@ -413,8 +416,11 @@ def generate_prediction_chart(
     actual_points = [(x_coord(idx), y_coord(val)) for idx, val in enumerate(actuals)]
     prediction_points = [(x_coord(idx), y_coord(val)) for idx, val in enumerate(predictions)]
 
+    x_axis_y = margin_top + plot_height
+    y_axis_x = margin_left
+
     year_labels = "".join(
-        f'<text x="{x_coord(idx):.2f}" y="{height - margin / 2:.2f}" text-anchor="middle" '
+        f'<text x="{x_coord(idx):.2f}" y="{x_axis_y + 25:.2f}" text-anchor="middle" '
         f'font-size="14" fill="#111">{year}</text>'
         for idx, year in enumerate(years)
     )
@@ -428,7 +434,7 @@ def generate_prediction_chart(
     for value in y_ticks:
         y = y_coord(value)
         grid_lines.append(
-            f'<line x1="{y_axis_x}" y1="{y:.2f}" x2="{width - margin}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>'
+            f'<line x1="{y_axis_x}" y1="{y:.2f}" x2="{width - margin_right}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>'
         )
         tick_elements.append(
             f'<line x1="{y_axis_x - 5}" y1="{y:.2f}" x2="{y_axis_x}" y2="{y:.2f}" stroke="#111" stroke-width="1"/>'
@@ -439,7 +445,7 @@ def generate_prediction_chart(
     for idx, _ in enumerate(years):
         x = x_coord(idx)
         grid_lines.append(
-            f'<line x1="{x:.2f}" y1="{margin}" x2="{x:.2f}" y2="{x_axis_y}" stroke="#f3f4f6" stroke-width="1"/>'
+            f'<line x1="{x:.2f}" y1="{margin_top}" x2="{x:.2f}" y2="{x_axis_y}" stroke="#f3f4f6" stroke-width="1"/>'
         )
     tick_elements_markup = "\n        ".join(tick_elements)
     grid_lines_markup = "\n        ".join(grid_lines)
@@ -472,7 +478,7 @@ def generate_prediction_chart(
             summary_lines.append(f"Toughest year {hardest_year}: {reason}")
     summary_text = " | ".join(summary_lines)
 
-    legend_y = height - margin - 35
+    legend_y = height - margin_bottom - 35
     legend = f"""
         <g transform="translate({width/2 - 170:.2f}, {legend_y:.2f})">
             <g>
@@ -496,16 +502,19 @@ def generate_prediction_chart(
 
     svg_header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 
+    title_y = 40
+    subtitle_y = title_y + 24
+
     svg_content = svg_header + f"""
     <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#ffffff"/>
-        <text x="{width/2:.2f}" y="{margin/2:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&amp;P 500 Actual vs. FinSight Predictions</text>
-        <text x="{width/2:.2f}" y="{margin/2 + 20:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">2015-2022 annual returns with error connectors</text>
+        <text x="{width/2:.2f}" y="{title_y:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&amp;P 500 Actual vs. FinSight Predictions</text>
+        <text x="{width/2:.2f}" y="{subtitle_y:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">2015-2022 annual returns with error connectors</text>
         {grid_lines_markup}
-        <line x1="{y_axis_x}" y1="{margin}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
-        <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
-        <text x="{width/2:.2f}" y="{height - 5:.2f}" text-anchor="middle" font-size="13" fill="#111">Year</text>
-        <text x="{15}" y="{height/2:.2f}" transform="rotate(-90 {15} {height/2:.2f})" text-anchor="middle" font-size="13" fill="#111">Annual return</text>
+        <line x1="{y_axis_x}" y1="{margin_top}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin_right}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <text x="{width/2:.2f}" y="{x_axis_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#111">Year</text>
+        <text x="{40}" y="{(margin_top + plot_height/2):.2f}" transform="rotate(-90 {40} {(margin_top + plot_height/2):.2f})" text-anchor="middle" font-size="13" fill="#111">Annual return</text>
         {tick_elements_markup}
         {connectors}
         <polyline points="{polyline(actual_points)}" fill="none" stroke="#15803d" stroke-width="3"/>
