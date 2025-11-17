@@ -86,15 +86,6 @@ python -m finsight.pipeline
 
 Need to force a refresh or point at a different Yahoo query? Add `--dataset-url <your-url>`, `--dataset-path /tmp/your_copy.json`, or `--refresh-dataset` to the command above and the scraper will obey those overrides before the agents run.
 
-### Using the Pinecone key you supplied
-You shared a live Pinecone Serverless key (`pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY`). Run the exact command below on macOS to hit the hosted index without touching your shell profile:
-
-```bash
-python3 -m finsight.pipeline \
-  --pinecone-api-key "pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY" \
-  --pinecone-region us-east-1
-```
-
 Prefer environment variables instead? Export `PINECONE_API_KEY` with that value once per terminal session and omit the CLI flags.
 
 ### Want to *see* the LangChain orchestration?
