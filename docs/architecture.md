@@ -68,3 +68,4 @@ FinSight orchestrates a sequence of specialized agents to transform raw S&P 500 
 - The pipeline should be runnable end-to-end via a single `python -m finsight.pipeline` command for reproducibility.
 - Testing hooks must be easily accessible so Test Titan can run sanity checks without network calls (mock/stub where necessary).
 - Pinecone usage must fail gracefully (fall back to in-memory) while still reporting the vector-store status to the mentorship and README logs so interviewers can verify LangChain + Pinecone participation.
+- CLI overrides (`--pinecone-api-key`, `--pinecone-region`) allow demonstrations to temporarily inject credentials without touching shell profiles, which is especially useful during interviews on managed laptops.

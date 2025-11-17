@@ -1,6 +1,7 @@
 """Run the FinSight pipeline via an explicit LangChain Runnable chain."""
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import sys
 from typing import Dict
@@ -12,7 +13,30 @@ if str(REPO_ROOT) not in sys.path:
 from finsight.pipeline import AgentOutput, build_langchain_chain, state_to_agent_output
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Inspect the FinSight LangChain workflow")
+    parser.add_argument(
+        "--pinecone-api-key",
+        dest="pinecone_api_key",
+        help="Override the PINECONE_API_KEY env var for this walkthrough",
+    )
+    parser.add_argument(
+        "--pinecone-region",
+        dest="pinecone_region",
+        help="Override the Pinecone region (defaults to env or us-east-1)",
+    )
+    parser.add_argument(
+        "--context-years",
+        dest="context_years",
+        nargs="+",
+        type=int,
+        help="Years to feed into the Research Agent (default 2015-2019)",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     stage_log = []
 
     def log_stage(name: str, state: Dict[str, object]) -> None:
@@ -20,7 +44,12 @@ def main() -> None:
         stage_log.append(name)
         print(f"[{name}] state keys -> {keys}")
 
-    chain = build_langchain_chain(stage_logger=log_stage)
+    chain = build_langchain_chain(
+        stage_logger=log_stage,
+        context_years=args.context_years,
+        pinecone_api_key=args.pinecone_api_key,
+        pinecone_region=args.pinecone_region,
+    )
     final_state = chain.invoke({})
     output: AgentOutput = state_to_agent_output(final_state)
 

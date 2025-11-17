@@ -42,7 +42,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 ### “Proxy blocked download” — what it means
 - When you see that warning in the console, it simply indicates that the current machine cannot reach PyPI or Yahoo Finance through its network proxy. FinSight catches that situation, logs it in Mr White’s briefing, and automatically falls back to the cached JSON snapshot so the workflow keeps running.
 - The cached file is not “made up”: it was generated from the same Yahoo Finance feed and ships with the repo to keep demos reproducible. You can regenerate it yourself at any time once you regain internet access (see below), which is the best proof of authenticity.
-- If you want the live path, install the dependencies after configuring your proxy, e.g. `pip install --proxy http://corp-proxy:8080 -r requirements.txt`, or download the required wheels (`pandas`, `yfinance`, `langchain`, `pinecone-client`) on an online machine and `pip install /path/to/*.whl` locally.
+- If you want the live path, install the dependencies after configuring your proxy, e.g. `pip install --proxy http://corp-proxy:8080 -r requirements.txt`, or download the required wheels (`pandas`, `yfinance`, `langchain`, `pinecone`) on an online machine and `pip install /path/to/*.whl` locally.
 
 ### Refreshing or validating the dataset yourself
 1. Ensure you can install `pandas` and `yfinance` (either via `pip install -r requirements.txt` or wheel files copied to the machine).
@@ -61,6 +61,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 - **Offline fallback:** When the real `langchain` package is unavailable (e.g., on a locked-down interview laptop), FinSight automatically swaps in a tiny compatible shim so the same Runnable chain executes without breaking the narrative.
 - **Pinecone usage:** `ContextVectorStore` wraps the Pinecone serverless client. When `PINECONE_API_KEY` (and optionally `PINECONE_REGION`, default `us-east-1`) is present, the Research Agent upserts yearly macro summaries into the `finsight-market-events` index and immediately fetches them for downstream agents. Without credentials, the same interface falls back to a deterministic in-memory vector store, but the Mentorship log still reports the Pinecone status so you know which path ran.
 - **Status tracking:** Every pipeline run records `vector_store_status` inside `AgentOutput`, and Mr White echoes it in his explanation so interviewers can see whether the live Pinecone integration or the local mock handled the context.
+- **CLI overrides:** Don’t want to edit env vars? Pass `--pinecone-api-key` and `--pinecone-region` directly to `python -m finsight.pipeline` (or any helper script) and the run will temporarily use those credentials without touching your shell profile.
 
 To enable the hosted Pinecone path locally, export your keys before running the pipeline:
 
@@ -72,24 +73,44 @@ python -m finsight.pipeline
 ```
 
 ## Running FinSight Locally
-1. *(Optional but recommended)* Install the lightweight dependencies if you want live data:
+1. *(Optional but recommended)* Install the lightweight dependencies if you want live data (use `python3 -m pip ...` if your macOS shell maps `python` to Python 2):
    ```bash
    pip install -r requirements.txt
    ```
-2. *(Optional for Pinecone)* If you have Pinecone credentials, set `PINECONE_API_KEY` (and `PINECONE_REGION` if needed) before execution so the Research Agent writes to the remote vector index.
+2. *(Optional for Pinecone)* If you have Pinecone credentials, either set `PINECONE_API_KEY`/`PINECONE_REGION` or pass them inline via `--pinecone-api-key` / `--pinecone-region` so the Research Agent writes to the remote vector index.
 3. Execute the pipeline (works even without step 1 thanks to the cached metrics and the in-memory Pinecone fallback):
    ```bash
-   python -m finsight.pipeline
+   python -m finsight.pipeline --pinecone-api-key "$PINECONE_API_KEY"
    ```
 4. Watch the terminal for the full agent-by-agent log, including Test Titan’s verdict, the Finance Bro summary that mentions the SVG path, and Mr White’s note about the LangChain + Pinecone setup.
 
+### Using the Pinecone key you supplied
+You shared a live Pinecone Serverless key (`pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY`). Run the exact command below on macOS to hit the hosted index without touching your shell profile:
+
+```bash
+python3 -m finsight.pipeline \
+  --pinecone-api-key "pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY" \
+  --pinecone-region us-east-1
+```
+
+Prefer environment variables instead? Export `PINECONE_API_KEY` with that value once per terminal session and omit the CLI flags.
+
 ### Want to *see* the LangChain orchestration?
 - Run the explicit walkthrough script to watch each Runnable stage pass the baton:
-  ```bash
-  python scripts/run_langchain_workflow.py
+ ```bash
+  python scripts/run_langchain_workflow.py --pinecone-api-key "$PINECONE_API_KEY"
   ```
 - The script uses the same `RunnableLambda` chain under the hood but prints the state keys after every step (bootstrap → collect → context → … → mentor) so you can confirm how LangChain orchestrates the agents in order.
 - The output ends with Finance Bro’s summary and the exact SVG file path, proving the application truly ran to completion.
+- The output ends with Finance Bro’s summary and the exact SVG file path, proving the application truly ran to completion.
+
+### “pinecone-client” import error (Mac fix)
+- The Pinecone project renamed its Python package from `pinecone-client` to `pinecone`. If you see the error `Please remove 'pinecone-client' from your project dependencies and add 'pinecone' instead`, remove the old wheel and install the new one:
+  ```bash
+  pip uninstall -y pinecone-client
+  pip install pinecone
+  ```
+- After that, re-run `python -m finsight.pipeline` (or `python3 -m ...` on macOS). The pipeline will either connect to Pinecone Serverless when `PINECONE_API_KEY` is set or report `vector_store_status=pinecone_local_memory:import_error:ModuleNotFoundError` if it must fall back to the deterministic local store.
 
 ## Viewing the Chart and Results
 - **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022.

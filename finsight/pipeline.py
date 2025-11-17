@@ -1,6 +1,7 @@
 """FinSight multi-agent pipeline implementation."""
 from __future__ import annotations
 
+import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,11 +33,17 @@ except ModuleNotFoundError:  # pragma: no cover - provide a tiny fallback for of
         def __or__(self, other):
             return RunnableLambda(lambda value: other.invoke(self.invoke(value)))
 
+PINECONE_IMPORT_ERROR: Optional[Exception] = None
 try:  # Pinecone is optional but encouraged when an API key is present
     from pinecone import Pinecone, ServerlessSpec  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - handled by local memory store
+except ModuleNotFoundError as exc:  # pragma: no cover - handled by local memory store
     Pinecone = None  # type: ignore
     ServerlessSpec = None  # type: ignore
+    PINECONE_IMPORT_ERROR = exc
+except Exception as exc:  # pragma: no cover - safety guard for old pinecone-client
+    Pinecone = None  # type: ignore
+    ServerlessSpec = None  # type: ignore
+    PINECONE_IMPORT_ERROR = exc
 
 
 @dataclass
@@ -79,7 +86,14 @@ StageLogger = Callable[[str, Dict[str, object]], None]
 class ContextVectorStore:
     """Minimal Pinecone facade that falls back to in-memory storage when offline."""
 
-    def __init__(self, index_name: str = "finsight-market-events", dimension: int = 8):
+    def __init__(
+        self,
+        index_name: str = "finsight-market-events",
+        dimension: int = 8,
+        *,
+        api_key: Optional[str] = None,
+        region: Optional[str] = None,
+    ):
         self.index_name = index_name
         self.dimension = dimension
         self._status = "pinecone_disabled"
@@ -87,25 +101,37 @@ class ContextVectorStore:
         self._index = None
         self._memory: Dict[str, Dict[str, object]] = {}
 
-        api_key = os.getenv("PINECONE_API_KEY")
-        region = os.getenv("PINECONE_REGION", "us-east-1")
-        if Pinecone is not None and api_key:
-            self._client = Pinecone(api_key=api_key)
+        resolved_api_key = api_key or os.getenv("PINECONE_API_KEY")
+        resolved_region = region or os.getenv("PINECONE_REGION", "us-east-1")
+
+        if Pinecone is not None and resolved_api_key:
             try:
-                self._client.describe_index(self.index_name)
-            except Exception:
-                if ServerlessSpec is None:  # pragma: no cover - safety guard
-                    raise RuntimeError("pinecone-serverless missing; upgrade pinecone-client.")
-                self._client.create_index(
-                    name=self.index_name,
-                    dimension=self.dimension,
-                    metric="cosine",
-                    spec=ServerlessSpec(cloud="aws", region=region),
-                )
-            self._index = self._client.Index(self.index_name)
-            self._status = f"pinecone_serverless:{region}"
+                self._client = Pinecone(api_key=resolved_api_key)
+                try:
+                    self._client.describe_index(self.index_name)
+                except Exception:
+                    if ServerlessSpec is None:  # pragma: no cover - safety guard
+                        raise RuntimeError("pinecone-serverless missing; upgrade pinecone-client.")
+                    self._client.create_index(
+                        name=self.index_name,
+                        dimension=self.dimension,
+                        metric="cosine",
+                        spec=ServerlessSpec(cloud="aws", region=resolved_region),
+                    )
+                self._index = self._client.Index(self.index_name)
+                self._status = f"pinecone_serverless:{resolved_region}"
+            except Exception as exc:  # pragma: no cover - network/auth specific
+                self._client = None
+                self._index = None
+                self._status = f"pinecone_local_memory:init_error:{type(exc).__name__}"
         else:
-            self._status = "pinecone_local_memory"
+            if PINECONE_IMPORT_ERROR is not None:
+                reason = type(PINECONE_IMPORT_ERROR).__name__
+                self._status = f"pinecone_local_memory:import_error:{reason}"
+            elif not resolved_api_key:
+                self._status = "pinecone_local_memory:no_api_key"
+            else:
+                self._status = "pinecone_local_memory"
 
     @property
     def status(self) -> str:
@@ -611,7 +637,9 @@ def _wrap_stage(stage_name: str, func: Callable[[Dict[str, object]], Dict[str, o
 
 
 def _bootstrap_state(
-    vector_store: ContextVectorStore, context_years: Sequence[int], stage_logger: Optional[StageLogger]
+    vector_store: ContextVectorStore,
+    context_years: Sequence[int],
+    stage_logger: Optional[StageLogger],
 ) -> Callable[[Dict[str, object]], Dict[str, object]]:
     def bootstrap(_: Dict[str, object]) -> Dict[str, object]:
         state = {"vector_store": vector_store, "context_years": list(context_years)}
@@ -627,10 +655,15 @@ def build_langchain_chain(
     vector_store: Optional[ContextVectorStore] = None,
     context_years: Optional[Sequence[int]] = None,
     stage_logger: Optional[StageLogger] = None,
+    pinecone_api_key: Optional[str] = None,
+    pinecone_region: Optional[str] = None,
 ):
     """Expose the LangChain Runnable sequence so scripts can inspect every hop."""
 
-    vector_store = vector_store or ContextVectorStore()
+    vector_store = vector_store or ContextVectorStore(
+        api_key=pinecone_api_key,
+        region=pinecone_region,
+    )
     years = list(context_years or range(2015, 2020))
 
     orchestrator = (
@@ -668,14 +701,52 @@ def state_to_agent_output(state: Dict[str, object]) -> AgentOutput:
     )
 
 
-def run_pipeline(stage_logger: Optional[StageLogger] = None) -> AgentOutput:
+def run_pipeline(
+    stage_logger: Optional[StageLogger] = None,
+    *,
+    pinecone_api_key: Optional[str] = None,
+    pinecone_region: Optional[str] = None,
+    context_years: Optional[Sequence[int]] = None,
+) -> AgentOutput:
     """Execute the FinSight workflow end-to-end via a LangChain Runnable pipeline."""
 
-    orchestrator = build_langchain_chain(stage_logger=stage_logger)
+    orchestrator = build_langchain_chain(
+        stage_logger=stage_logger,
+        context_years=context_years,
+        pinecone_api_key=pinecone_api_key,
+        pinecone_region=pinecone_region,
+    )
     state = orchestrator.invoke({})
     return state_to_agent_output(state)
 
 
+def _parse_cli_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the FinSight LangChain pipeline")
+    parser.add_argument(
+        "--pinecone-api-key",
+        dest="pinecone_api_key",
+        help="Override the PINECONE_API_KEY env var for this run",
+    )
+    parser.add_argument(
+        "--pinecone-region",
+        dest="pinecone_region",
+        help="Override the PINECONE_REGION env var (defaults to us-east-1)",
+    )
+    parser.add_argument(
+        "--context-years",
+        dest="context_years",
+        nargs="+",
+        type=int,
+        help="Years to feed into the Research Agent (default 2015-2019)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    output = run_pipeline()
+    args = _parse_cli_args()
+    output = run_pipeline(
+        pinecone_api_key=args.pinecone_api_key,
+        pinecone_region=args.pinecone_region,
+        context_years=args.context_years,
+    )
     print(output)
