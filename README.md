@@ -1,5 +1,4 @@
 # FinSight
-
 FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and forecasts S&P 500 performance. It was designed as an interview-ready showcase, so this README doubles as the system’s report: you will find the project proposal, the agent roster, the workflow explanation, and the instructions for running everything locally—including how to view the predictions-versus-actuals chart the Finance Bro references.
 
 ## Project Proposal
