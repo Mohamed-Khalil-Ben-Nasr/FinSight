@@ -392,10 +392,10 @@ def generate_prediction_chart(
     predictions = [row["prediction"] for row in details]
     max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
 
-    width, height = 780, 480
+    width, height = 820, 560
     margin = 70
     plot_width = width - 2 * margin
-    plot_height = height - 2 * margin
+    plot_height = height - 2 * margin - 80  # leave breathing room for legend + summary
 
     def x_coord(index: int) -> float:
         if len(years) == 1:
@@ -404,7 +404,8 @@ def generate_prediction_chart(
         return margin + index * step
 
     def y_coord(value: float) -> float:
-        return height / 2 - (value / max_abs_value) * (plot_height / 2)
+        vertical_center = margin + plot_height / 2
+        return vertical_center - (value / max_abs_value) * (plot_height / 2)
 
     def polyline(points: List[Tuple[float, float]]) -> str:
         return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
@@ -418,7 +419,7 @@ def generate_prediction_chart(
         for idx, year in enumerate(years)
     )
 
-    x_axis_y = height - margin
+    x_axis_y = margin + plot_height
     y_axis_x = margin
 
     y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
@@ -471,8 +472,9 @@ def generate_prediction_chart(
             summary_lines.append(f"Toughest year {hardest_year}: {reason}")
     summary_text = " | ".join(summary_lines)
 
+    legend_y = height - margin - 35
     legend = f"""
-        <g transform="translate({width/2 - 150:.2f}, {height - margin/4 + 25:.2f})">
+        <g transform="translate({width/2 - 170:.2f}, {legend_y:.2f})">
             <g>
                 <line x1="0" y1="6" x2="24" y2="6" stroke="#15803d" stroke-width="3"/>
                 <circle cx="12" cy="6" r="4" fill="#15803d" stroke="#fff" stroke-width="1.5"/>
@@ -487,12 +489,14 @@ def generate_prediction_chart(
     """
 
     summary_block = (
-        f'<text x="{width/2:.2f}" y="{height - margin/4 + 90:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
+        f'<text x="{width/2:.2f}" y="{legend_y + 60:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
         if summary_text
         else ""
     )
 
-    svg_content = f"""
+    svg_header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+
+    svg_content = svg_header + f"""
     <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#ffffff"/>
         <text x="{width/2:.2f}" y="{margin/2:.2f}" fill="#111" font-size="20" font-weight="600" text-anchor="middle">S&P 500 Actual vs. FinSight Predictions</text>
@@ -514,7 +518,7 @@ def generate_prediction_chart(
     </svg>
     """
 
-    chart_path.write_text("\n".join(line.strip() for line in svg_content.strip().splitlines()))
+    chart_path.write_text("\n".join(line.strip() for line in svg_content.strip().splitlines()) + "\n")
     return str(chart_path)
 
 
