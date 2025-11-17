@@ -84,15 +84,6 @@ python -m finsight.pipeline
    ```
 4. Watch the terminal for the full agent-by-agent log, including Test Titan’s verdict, the Finance Bro summary that mentions the SVG path, and Mr White’s note about the LangChain + Pinecone setup.
 
-### Using the Pinecone key you supplied
-You shared a live Pinecone Serverless key (`pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY`). Run the exact command below on macOS to hit the hosted index without touching your shell profile:
-
-```bash
-python3 -m finsight.pipeline \
-  --pinecone-api-key "pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY" \
-  --pinecone-region us-east-1
-```
-
 Prefer environment variables instead? Export `PINECONE_API_KEY` with that value once per terminal session and omit the CLI flags.
 
 ### Want to *see* the LangChain orchestration?
