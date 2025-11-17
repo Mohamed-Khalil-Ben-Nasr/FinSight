@@ -392,9 +392,9 @@ def generate_prediction_chart(
     predictions = [row["prediction"] for row in details]
     max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
 
-    width, height = 820, 560
+    width, height = 820, 620
     margin_top = 110
-    margin_bottom = 90
+    margin_bottom = 140
     margin_left = 90
     margin_right = 70
     # "margin" previously referred to the top margin before we refined the layout.
@@ -424,13 +424,10 @@ def generate_prediction_chart(
     y_axis_x = margin_left
 
     year_labels = "".join(
-        f'<text x="{x_coord(idx):.2f}" y="{x_axis_y + 25:.2f}" text-anchor="middle" '
+        f'<text x="{x_coord(idx):.2f}" y="{x_axis_y + 16:.2f}" text-anchor="middle" '
         f'font-size="14" fill="#111">{year}</text>'
         for idx, year in enumerate(years)
     )
-
-    x_axis_y = margin + plot_height
-    y_axis_x = margin
 
     y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
     tick_elements = []
@@ -482,7 +479,7 @@ def generate_prediction_chart(
             summary_lines.append(f"Toughest year {hardest_year}: {reason}")
     summary_text = " | ".join(summary_lines)
 
-    legend_y = height - margin_bottom - 35
+    legend_y = x_axis_y + 65
     legend = f"""
         <g transform="translate({width/2 - 170:.2f}, {legend_y:.2f})">
             <g>
@@ -499,7 +496,7 @@ def generate_prediction_chart(
     """
 
     summary_block = (
-        f'<text x="{width/2:.2f}" y="{legend_y + 60:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
+        f'<text x="{width/2:.2f}" y="{legend_y + 55:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
         if summary_text
         else ""
     )
@@ -517,7 +514,7 @@ def generate_prediction_chart(
         {grid_lines_markup}
         <line x1="{y_axis_x}" y1="{margin_top}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
         <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin_right}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
-        <text x="{width/2:.2f}" y="{x_axis_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#111">Year</text>
+        <text x="{width/2:.2f}" y="{x_axis_y + 35:.2f}" text-anchor="middle" font-size="13" fill="#111">Year</text>
         <text x="{40}" y="{(margin_top + plot_height/2):.2f}" transform="rotate(-90 {40} {(margin_top + plot_height/2):.2f})" text-anchor="middle" font-size="13" fill="#111">Annual return</text>
         {tick_elements_markup}
         {connectors}

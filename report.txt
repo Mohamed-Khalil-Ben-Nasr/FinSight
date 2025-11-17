@@ -2,7 +2,7 @@ FinSight Multi-Agent Report
 =============================
 Data source: cached_snapshot
 Source notes: Used cached snapshot derived from the same Yahoo Finance pulls because yfinance error: ProxyError: Failed to perform, curl: (56) CONNECT tunnel failed, response 403. See https://curl.se/libcurl/c/libcurl-errors.html first for more details..
-Vector store status: pinecone_local_memory:import_error:ModuleNotFoundError
+Vector store status: pinecone_local_memory:import_error:Exception
 Chart: artifacts/predictions_vs_actual.svg
 
 Annual Metrics (2015-2022)
@@ -62,7 +62,7 @@ We built FinSight as a relay race of specialists so you can trace every decision
    them into AnnualMetric objects covering 2015–2022. That cache is the same Yahoo Finance data,
    just frozen for reproducibility, so quality stays aligned with a widely trusted public feed.
 3. Research Agent pins three macro story beats to each pre-pandemic year (2015, 2016, 2017, 2018, 2019) and pushes
-   them through a Pinecone vector store (pinecone_local_memory:import_error:ModuleNotFoundError) so later agents can query a real RAG memory.
+   them through a Pinecone vector store (pinecone_local_memory:import_error:Exception) so later agents can query a real RAG memory.
 4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.
 5. Evaluator cross-checks predictions against actual returns, reports MAE and toughest year,
    which this run pegs at 16.86% average error with 2022 hardest because Structural shift not captured.
