@@ -7,9 +7,9 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 - **Deliverables:** A reproducible pipeline that outputs (1) the full agent conversation, (2) an evaluation with MAE/error diagnostics, (3) a Finance Bro summary, (4) refinement recommendations, and (5) an SVG chart mapping predictions vs. actuals.
 
 ## Current Status (Goal ✅ Achieved)
-- **Functional pipeline:** `python -m finsight.pipeline` runs end-to-end today, even on locked-down laptops, because it dynamically swaps between live `yfinance`/`pandas` pulls and the bundled dataset.
+- **Functional pipeline:** `python -m finsight.pipeline` runs end-to-end today, even on locked-down laptops, because it dynamically swaps between a freshly scraped Yahoo Finance dataset (`data/dataset.json`) and the legacy `yfinance`/`pandas` path.
 - **LangChain orchestration:** The agents are wired together through `build_langchain_chain()` inside `finsight.pipeline`, so you can reuse the Runnable graph elsewhere or observe it via `scripts/run_langchain_workflow.py`.
-- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` **and** a nicely formatted `report.txt` that mirrors the `AgentOutput` structure (Finance Bro summary, Test Titan verdict, Mr White tutorial, vector-store status, etc.). The SVG now includes a legend, annotations for each data point, MAE + toughest year callouts, and connector lines that make the misses easy to see at a glance.
+- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` **and** a nicely formatted `report.txt` that mirrors the `AgentOutput` structure (Finance Bro summary, Test Titan verdict, Mr White tutorial, vector-store status, etc.). The SVG now plots the full daily timeline so each year contributes **100+ data points**, and it includes a legend, annotations, MAE + toughest-year callouts, and connector lines that make the misses easy to see at a glance.
 - **Testing baked in:** Test Titan’s checks are part of the chain; the run only reports success after verifying data coverage, numeric metrics, and chart creation. When dependencies are installed, `pip install -r requirements.txt && python -m finsight.pipeline` demonstrates the full live-data path.
 
 ## Agent Overview
@@ -26,18 +26,18 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 | **Lord of the Mysteries** | The orchestration layer that keeps the agents in sync and synthesizes the final report. |
 
 ## Workflow Summary
-1. **Data ingestion:** `collect_sp500_data()` pulls ^GSPC history via `yfinance`/`pandas`. When those heavy deps are missing or the network is blocked, the function automatically switches to the bundled JSON snapshot (`data/sp500_annual_metrics_2015_2022.json`).
+1. **Data ingestion:** `collect_sp500_data()` scrapes the Yahoo Finance ^GSPC history page (the same URL you provided) into `data/dataset.json`, then derives annual return/volatility metrics. When scraping is blocked, it falls back to the prior `yfinance`/`pandas` routine and, if necessary, the legacy annual snapshot (`data/sp500_annual_metrics_2015_2022.json`).
 2. **Context enrichment:** `research_macro_events()` writes the Research Agent’s 2015–2019 story beats into a Pinecone `finsight-market-events` vector index (or an offline in-memory replica) and hands the retrieved context to `build_prediction_payload()`.
 3. **Forecasting:** `prediction_agent()` applies a heuristic baseline plus contextual adjustments to produce 2020–2022 returns and rationales.
-4. **Evaluation + charting:** `evaluator_agent()` calculates MAE/error details and `generate_prediction_chart()` saves `artifacts/predictions_vs_actual.svg`, rendering labeled axes, percent annotations, a centered legend, and a MAE/toughest-year summary block so the visual matches the written explanation.
+4. **Evaluation + charting:** `evaluator_agent()` calculates MAE/error details and `generate_prediction_chart()` saves `artifacts/predictions_vs_actual.svg`, rendering the full daily return curves (100+ samples per year), labeled axes, percent annotations, a centered legend, and a MAE/toughest-year summary block so the visual matches the written explanation.
 5. **Narration + refinement:** `finance_bro_agent()` turns the stats into a conversational summary while `refinement_agent()` proposes upgrades.
 6. **Quality gate:** `test_titan_agent()` confirms the dataset, predictions, and evaluation objects are sane before declaring “All tests passed ✅”.
 7. **Report packaging:** `run_pipeline()` executes a LangChain `Runnable` sequence that stitches every agent together and saves the consolidated `AgentOutput` as `report.txt`, complete with Mr White’s explainer.
 
 ## Dataset Source & Quality
-- **Primary feed:** Daily ^GSPC candles from Yahoo Finance pulled through `yfinance`. This is a widely trusted public dataset with tight alignment to official S&P 500 closing levels, making it reliable for historical backtesting.
-- **Cached snapshot:** `data/sp500_annual_metrics_2015_2022.json` mirrors those Yahoo Finance pulls. It is derived directly from the live feed (no synthetic values), so offline runs still reflect the real index behavior.
-- **Data quality assessment:** The DataCollector converts the raw closes into annual compounded returns plus volatility, then Test Titan checks for missing years or malformed numbers before the rest of the workflow runs. Because the cache is deterministic and the live feed is reputable, we get both reproducibility and fidelity—while noting that Yahoo Finance may lag corporate action adjustments by a day and does not include proprietary total-return tweaks.
+- **Primary feed:** Daily ^GSPC candles scraped directly from the Yahoo Finance history page you linked (period1=1420070400, period2=1668643200). The scraper stores every row as-is inside `data/dataset.json`, so you can open that file and inspect all entries (Date, Open, High, Low, Close, Adj Close, Volume) without running any code.
+- **Automated refresh:** `scripts/refresh_dataset.py` re-scrapes the same URL via the pipeline’s helper (`load_history_dataset`) and rewrites both `data/dataset.json` and the derived `data/sp500_annual_metrics_2015_2022.json`, keeping the repository in sync with Yahoo’s feed.
+- **Data quality assessment:** The DataCollector converts the scraped daily candles into annual compounded returns plus volatility, then Test Titan checks for missing years or malformed numbers before the rest of the workflow runs. Because the raw dataset is straight from Yahoo Finance—and cached verbatim for reproducibility—we get both fidelity and determinism (with the usual caveat that Yahoo may lag intraday corporate-action adjustments by a day).
 
 ### “Proxy blocked download” — what it means
 - When you see that warning in the console, it simply indicates that the current machine cannot reach PyPI or Yahoo Finance through its network proxy. FinSight catches that situation, logs it in Mr White’s briefing, and automatically falls back to the cached JSON snapshot so the workflow keeps running.
@@ -45,13 +45,13 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 - If you want the live path, install the dependencies after configuring your proxy, e.g. `pip install --proxy http://corp-proxy:8080 -r requirements.txt`, or download the required wheels (`pandas`, `yfinance`, `langchain`, `pinecone`) on an online machine and `pip install /path/to/*.whl` locally.
 
 ### Refreshing or validating the dataset yourself
-1. Ensure you can install `pandas` and `yfinance` (either via `pip install -r requirements.txt` or wheel files copied to the machine).
-2. Run the helper script to pull fresh data and overwrite the cache:
+1. Ensure `requests` is installed (already covered by `pip install -r requirements.txt`).
+2. Run the helper script to re-scrape Yahoo Finance and overwrite the cached files:
    ```bash
    python scripts/refresh_dataset.py
    ```
-3. Re-run `python -m finsight.pipeline` and you will see Mr White report `data_source: yfinance`, proving the pipeline used your newly refreshed metrics.
-4. Commit the updated `data/sp500_annual_metrics_2015_2022.json` if you want teammates to benefit from the refreshed sample.
+3. Inspect `data/dataset.json` (every historical row) or `data/sp500_annual_metrics_2015_2022.json` (the derived annual metrics) to confirm the refresh succeeded.
+4. Re-run `python -m finsight.pipeline` and Mr White will cite `data_source: yahoo_history_html` if the scraper succeeded, or fall back to the legacy path if the proxy blocked it.
 
 ## LangChain & Pinecone (Mr White’s Lesson)
 > “A LangChain Runnable sequence kicks off the show so every agent hands a structured state to the next. The Research Agent ships its macro bullets into Pinecone (or the offline mirror) so later agents can tap a real RAG memory.” – Mr White
@@ -84,6 +84,8 @@ python -m finsight.pipeline
    ```
 4. Open the freshly generated `report.txt` (in the project root) to read the formatted summary, which includes the evaluation table, Finance Bro’s notes, and Mr White’s LangChain + Pinecone explanation. The terminal now simply tells you where the file lives along with Test Titan’s `All tests passed ✅` line.
 
+Need to force a refresh or point at a different Yahoo query? Add `--dataset-url <your-url>`, `--dataset-path /tmp/your_copy.json`, or `--refresh-dataset` to the command above and the scraper will obey those overrides before the agents run.
+
 ### Using the Pinecone key you supplied
 You shared a live Pinecone Serverless key (`pcsk_4qeazd_6nYxuL7ACTaduh585oVr7mmiFmpSNtdVJYSjAWZbPt44TVUaJVPEJd7LBrdjMFY`). Run the exact command below on macOS to hit the hosted index without touching your shell profile:
 
@@ -113,8 +115,8 @@ Prefer environment variables instead? Export `PINECONE_API_KEY` with that value 
 - After that, re-run `python -m finsight.pipeline` (or `python3 -m ...` on macOS). The pipeline will either connect to Pinecone Serverless when `PINECONE_API_KEY` is set or report `vector_store_status=pinecone_local_memory:import_error:ModuleNotFoundError` if it must fall back to the deterministic local store.
 
 ## Viewing the Chart and Results
-- **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022. The refreshed design uses a white background, grid lines, colored markers, dashed connectors showing the prediction error per year, and a legend/summary footer that highlights MAE plus the toughest year so the story is visually self-contained.
+- **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022. The refreshed design draws the **entire daily history** (so each year contributes more than 100 data points), overlays the prediction bands, and uses a white background, grid lines, annotated axes, and a legend/summary footer that highlights MAE plus the toughest year so the story is visually self-contained.
 - **Agent report:** Every run writes `report.txt` with the structured `AgentOutput` object. It lists the historical metrics, macro context, predictions with rationales, evaluation stats (including MAE and hardest year), Finance Bro’s explanation, refinement ideas, the absolute path to the chart, **and** the `vector_store_status` so you can cite whether Pinecone or the local replica supplied the memories.
-- **Reusable data:** The cached dataset lives at `data/sp500_annual_metrics_2015_2022.json`, so you can reset or re-run the workflow offline anytime.
+- **Reusable data:** The full scraped history lives at `data/dataset.json` (with all rows from the Yahoo page) and the aggregated annual snapshot remains at `data/sp500_annual_metrics_2015_2022.json`, so you can re-run or audit everything offline anytime.
 
 Bring this README to your interview: it covers the pitch, the architecture, and exactly how to reproduce the results—including where to find the visual evidence.

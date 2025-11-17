@@ -32,6 +32,22 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Years to feed into the Research Agent (default 2015-2019)",
     )
+    parser.add_argument(
+        "--dataset-url",
+        dest="dataset_url",
+        help="Override the Yahoo Finance history URL",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        dest="dataset_path",
+        help="Custom path for the scraped dataset JSON",
+    )
+    parser.add_argument(
+        "--refresh-dataset",
+        dest="refresh_dataset",
+        action="store_true",
+        help="Force a re-scrape before the walkthrough",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +65,9 @@ def main() -> None:
         context_years=args.context_years,
         pinecone_api_key=args.pinecone_api_key,
         pinecone_region=args.pinecone_region,
+        dataset_url=args.dataset_url,
+        dataset_path=Path(args.dataset_path) if args.dataset_path else None,
+        refresh_dataset=args.refresh_dataset,
     )
     final_state = chain.invoke({})
     output: AgentOutput = state_to_agent_output(final_state)

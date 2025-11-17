@@ -5,9 +5,9 @@ FinSight orchestrates a sequence of specialized agents to transform raw S&P 500 
 
 1. **Data Acquisition & Preparation**
    - **Agent:** DataCollector
-   - **Input:** Ticker symbol (^GSPC), date range (2015-01-01 to 2022-12-31).
-   - **Process:** Download daily OHLC data via `yfinance`, compute daily returns, aggregate into annual return and volatility metrics, and log the data source (`yfinance` vs. cached snapshot). The fallback JSON was generated from the same Yahoo Finance series, so quality remains tied to a reputable public feed while ensuring offline reproducibility.
-   - **Output:** List of `AnnualMetric(year, avg_return, volatility)` objects spanning 2015–2022, plus a label describing whether the data was live or cached.
+   - **Input:** Yahoo Finance historical page for ^GSPC (period1=1420070400, period2=1668643200) + date range filter (2015-01-01 to 2022-12-31).
+   - **Process:** Scrape the page’s `HistoricalPriceStore` JSON into `data/dataset.json`, compute daily returns from the cached candles, aggregate into annual return/volatility metrics, and log whether the run used the scraped dataset (`yahoo_history_html`), a live `yfinance` pull, or the legacy fallback snapshot.
+   - **Output:** List of `AnnualMetric(year, avg_return, volatility)` objects spanning 2015–2022, plus a `DataSourceReport` describing the provenance.
 
 2. **Context Enrichment**
    - **Agent:** Research Agent

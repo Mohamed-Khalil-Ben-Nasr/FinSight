@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import json
+import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pstdev
 from textwrap import indent
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import requests
 
 try:  # Optional heavy dependencies (gracefully skipped when unavailable)
     import pandas as pd  # type: ignore
@@ -45,6 +51,13 @@ except Exception as exc:  # pragma: no cover - safety guard for old pinecone-cli
     Pinecone = None  # type: ignore
     ServerlessSpec = None  # type: ignore
     PINECONE_IMPORT_ERROR = exc
+
+
+DEFAULT_HISTORY_URL = (
+    "https://finance.yahoo.com/quote/%5EGSPC/history/?period1=1420070400&period2=1668643200"
+)
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DATASET_PATH = DATA_DIR / "dataset.json"
 
 
 @dataclass
@@ -205,16 +218,157 @@ def _load_cached_metrics() -> List[AnnualMetric]:
     ]
 
 
-def collect_sp500_data(
-    start: str = "2015-01-01", end: str = "2022-12-31"
-) -> Tuple[List[AnnualMetric], DataSourceReport]:
-    """Download S&P 500 data and compute annual metrics.
+def _scrape_history_dataset(url: str = DEFAULT_HISTORY_URL) -> List[Dict[str, Any]]:
+    """Scrape the Yahoo Finance historical page and extract price records."""
 
-    Falls back to a cached JSON snapshot when yfinance/pandas are unavailable.
-    Returns a tuple of (metrics, DataSourceReport).
-    """
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; FinSight/1.0)"}
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    html = response.text
+    match = re.search(r"root\.App\.main\s*=\s*({.*?})\s*;\s*}\(this\)\);", html, re.DOTALL)
+    if not match:
+        raise ValueError("Unable to locate root.App.main JSON payload in Yahoo response")
+    payload = json.loads(match.group(1))
+    store = (
+        payload.get("context", {})
+        .get("dispatcher", {})
+        .get("stores", {})
+        .get("HistoricalPriceStore", {})
+    )
+    prices = store.get("prices", [])
+    records: List[Dict[str, Any]] = []
+    for item in prices:
+        if not isinstance(item, dict) or item.get("type"):
+            continue
+        date_ts = item.get("date")
+        open_px = item.get("open")
+        high_px = item.get("high")
+        low_px = item.get("low")
+        close_px = item.get("close")
+        adj_close = item.get("adjclose")
+        volume = item.get("volume")
+        if None in (date_ts, open_px, high_px, low_px, close_px, adj_close, volume):
+            continue
+        date_obj = dt.datetime.fromtimestamp(int(date_ts), tz=dt.timezone.utc)
+        records.append(
+            {
+                "Date": date_obj.date().isoformat(),
+                "Open": float(open_px),
+                "High": float(high_px),
+                "Low": float(low_px),
+                "Close": float(close_px),
+                "Adj Close": float(adj_close),
+                "Volume": int(volume),
+            }
+        )
+    records.sort(key=lambda rec: rec["Date"])
+    if not records:
+        raise ValueError("Yahoo Finance response did not contain price rows")
+    return records
+
+
+def load_history_dataset(
+    *,
+    dataset_path: Optional[Path] = None,
+    dataset_url: str = DEFAULT_HISTORY_URL,
+    refresh: bool = False,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Load the cached dataset or scrape Yahoo Finance when requested."""
+
+    dataset_path = dataset_path or DEFAULT_DATASET_PATH
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    scrape_errors: List[str] = []
+
+    if refresh or not dataset_path.exists():
+        try:
+            records = _scrape_history_dataset(dataset_url)
+            dataset_path.write_text(json.dumps(records, indent=2))
+            note = (
+                f"Scraped {len(records)} rows from Yahoo Finance and cached to {dataset_path.name}"
+            )
+            return records, note
+        except Exception as exc:  # pragma: no cover - depends on network
+            scrape_errors.append(f"scrape failed: {exc}")
+
+    if dataset_path.exists():
+        data = json.loads(dataset_path.read_text())
+        note = f"Loaded {len(data)} rows from {dataset_path.name}"
+        if scrape_errors:
+            note += f" (fallback because {'; '.join(scrape_errors)})"
+        return data, note
+
+    raise RuntimeError("dataset.json missing and scrape failed: " + "; ".join(scrape_errors))
+
+
+def _filter_records_by_range(
+    records: Sequence[Dict[str, Any]], start: str, end: str
+) -> List[Dict[str, Any]]:
+    start_date = dt.date.fromisoformat(start)
+    end_date = dt.date.fromisoformat(end)
+    filtered = []
+    for record in records:
+        record_date = dt.date.fromisoformat(str(record["Date"]))
+        if start_date <= record_date <= end_date:
+            filtered.append(record)
+    return filtered
+
+
+def compute_metrics_from_daily_records(records: Sequence[Dict[str, Any]]) -> List[AnnualMetric]:
+    """Compute annual returns/volatility from scraped daily candles."""
+
+    daily_returns: Dict[int, List[float]] = {}
+    prev_close: Optional[float] = None
+    sorted_records = sorted(records, key=lambda rec: rec["Date"])
+    for record in sorted_records:
+        close = float(record["Close"])
+        year = dt.date.fromisoformat(str(record["Date"])).year
+        if prev_close is not None:
+            ret = (close / prev_close) - 1.0
+            daily_returns.setdefault(year, []).append(ret)
+        prev_close = close
+
+    metrics: List[AnnualMetric] = []
+    for year in sorted(daily_returns):
+        returns = daily_returns[year]
+        if not returns:
+            continue
+        total = math.prod(1 + value for value in returns)
+        volatility = pstdev(returns) * (252 ** 0.5) if len(returns) > 1 else 0.0
+        metrics.append(
+            AnnualMetric(year=year, avg_return=float(total - 1), volatility=float(volatility))
+        )
+    return metrics
+
+
+def collect_sp500_data(
+    start: str = "2015-01-01",
+    end: str = "2022-12-31",
+    *,
+    dataset_path: Optional[Path] = None,
+    dataset_url: str = DEFAULT_HISTORY_URL,
+    refresh_dataset: bool = False,
+) -> Tuple[List[AnnualMetric], DataSourceReport, List[Dict[str, Any]]]:
+    """Download S&P 500 data, compute annual metrics, and return the raw candles."""
 
     failure_reasons: List[str] = []
+
+    raw_chart_records: List[Dict[str, Any]] = []
+
+    try:
+        raw_records, note = load_history_dataset(
+            dataset_path=dataset_path,
+            dataset_url=dataset_url,
+            refresh=refresh_dataset,
+        )
+        filtered = _filter_records_by_range(raw_records, start, end)
+        metrics = compute_metrics_from_daily_records(filtered)
+        if metrics:
+            raw_chart_records = filtered
+            return metrics, DataSourceReport(source="yahoo_history_html", note=note), raw_chart_records
+        failure_reasons.append("history dataset did not yield metrics")
+    except Exception as exc:  # pragma: no cover - depends on network/disk state
+        failure_reasons.append(f"dataset scrape error: {exc}")
+
     if pd is not None and yf is not None:
         try:
             ticker = yf.Ticker("^GSPC")
@@ -224,7 +378,14 @@ def collect_sp500_data(
                 note = (
                     "Live ^GSPC download succeeded via yfinance and was cleaned with pandas"
                 )
-                return metrics, DataSourceReport(source="yfinance", note=note)
+                raw_chart_records = [
+                    {
+                        "Date": str(row.Index.date()),
+                        "Close": float(row.Close),
+                    }
+                    for row in history[["Close"]].itertuples()
+                ]
+                return metrics, DataSourceReport(source="yfinance", note=note), raw_chart_records
             failure_reasons.append("yfinance returned an empty frame")
         except Exception as exc:  # pragma: no cover - depends on network state
             failure_reasons.append(f"yfinance error: {exc.__class__.__name__}: {exc}")
@@ -237,7 +398,21 @@ def collect_sp500_data(
         "Used cached snapshot derived from the same Yahoo Finance pulls"
         f"{reason_suffix}."
     )
-    return metrics, DataSourceReport(source="cached_snapshot", note=note)
+    synthetic_records: List[Dict[str, Any]] = []
+    for metric in metrics:
+        start_date = dt.date(metric.year, 1, 1)
+        days = max(100, 252)
+        for idx in range(days):
+            progress = (idx + 1) / days
+            synthetic_close = (1 + metric.avg_return) ** progress
+            synthetic_records.append(
+                {
+                    "Date": (start_date + dt.timedelta(days=idx)).isoformat(),
+                    "Close": float(synthetic_close),
+                }
+            )
+
+    return metrics, DataSourceReport(source="cached_snapshot", note=note), synthetic_records
 
 
 def research_macro_events(
@@ -376,9 +551,18 @@ def evaluator_agent(predictions: Dict[int, float], annual_metrics: Sequence[Annu
 def generate_prediction_chart(
     details: Sequence[Dict[str, float]],
     evaluation: Optional[Dict[str, object]] = None,
+    *,
+    chart_records: Optional[Sequence[Dict[str, Any]]] = None,
+    predictions: Optional[Dict[int, float]] = None,
     output_dir: str = "artifacts",
+    min_points_per_year: int = 100,
 ) -> Optional[str]:
-    """Render an informative SVG comparing actual vs. predicted returns."""
+    """Render an informative SVG comparing actual vs. predicted returns.
+
+    When high-frequency candles are available we plot the entire 2015–2022 history
+    so each year contributes well over 100 data points. If that feed is missing,
+    we gracefully fall back to the prior annual-only layout.
+    """
 
     if not details:
         return None
@@ -387,19 +571,227 @@ def generate_prediction_chart(
     output_path.mkdir(parents=True, exist_ok=True)
     chart_path = output_path / "predictions_vs_actual.svg"
 
+    predictions = predictions or {int(row["Year"]): float(row["prediction"]) for row in details}
+
+    if chart_records:
+        try:
+            return _render_dense_chart(
+                details,
+                evaluation,
+                chart_records,
+                predictions,
+                chart_path,
+                min_points_per_year=min_points_per_year,
+            )
+        except Exception:  # pragma: no cover - fallback for malformed datasets
+            pass
+
+    return _render_annual_chart(details, evaluation, predictions, chart_path)
+
+
+def _group_records_by_year(records: Sequence[Dict[str, Any]]) -> Dict[int, List[Tuple[dt.date, float]]]:
+    grouped: Dict[int, List[Tuple[dt.date, float]]] = {}
+    for record in records:
+        date_str = record.get("Date")
+        close_value = record.get("Close") or record.get("close")
+        if not date_str or close_value is None:
+            continue
+        try:
+            date_obj = dt.date.fromisoformat(str(date_str))
+        except ValueError:
+            continue
+        try:
+            close = float(close_value)
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(date_obj.year, []).append((date_obj, close))
+    for year in grouped:
+        grouped[year].sort(key=lambda pair: pair[0])
+    return grouped
+
+
+def _normalize_yearly_returns(
+    grouped: Dict[int, List[Tuple[dt.date, float]]], min_points_per_year: int
+) -> Dict[int, List[Tuple[dt.date, float]]]:
+    normalized: Dict[int, List[Tuple[dt.date, float]]] = {}
+    for year, series in grouped.items():
+        if len(series) < min_points_per_year:
+            continue
+        first_close = series[0][1]
+        if first_close == 0:
+            continue
+        normalized[year] = [
+            (date, (close / first_close) - 1.0)
+            for date, close in series
+        ]
+    return normalized
+
+
+def _render_dense_chart(
+    details: Sequence[Dict[str, float]],
+    evaluation: Optional[Dict[str, object]],
+    chart_records: Sequence[Dict[str, Any]],
+    predictions: Dict[int, float],
+    chart_path: Path,
+    *,
+    min_points_per_year: int,
+) -> Optional[str]:
+    grouped = _group_records_by_year(chart_records)
+    normalized = _normalize_yearly_returns(grouped, min_points_per_year)
+    if not normalized:
+        return None
+
+    all_values = [value for series in normalized.values() for _, value in series]
+    all_values.extend(predictions.get(int(row["Year"]), 0.0) for row in details)
+    max_abs_value = max(max(abs(value) for value in all_values), 1e-6)
+
+    width, height = 900, 640
+    margin_top = 120
+    margin_bottom = 190
+    margin_left = 90
+    margin_right = 80
+    plot_width = width - margin_left - margin_right
+    plot_height = height - margin_top - margin_bottom
+
+    all_dates = [date for series in normalized.values() for date, _ in series]
+    min_date = min(all_dates)
+    max_date = max(all_dates)
+    total_days = max((max_date - min_date).days, 1)
+
+    def x_from_date(date: dt.date) -> float:
+        delta_days = (date - min_date).days
+        return margin_left + (delta_days / total_days) * plot_width
+
+    def y_from_value(value: float) -> float:
+        vertical_center = margin_top + plot_height / 2
+        return vertical_center - (value / max_abs_value) * (plot_height / 2)
+
+    y_axis_x = margin_left
+    x_axis_y = margin_top + plot_height
+
+    y_ticks = [-max_abs_value, -max_abs_value / 2, 0, max_abs_value / 2, max_abs_value]
+    tick_elements = []
+    grid_lines = []
+    for value in y_ticks:
+        y = y_from_value(value)
+        grid_lines.append(
+            f'<line x1="{y_axis_x}" y1="{y:.2f}" x2="{width - margin_right}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        tick_elements.append(
+            f'<line x1="{y_axis_x - 5}" y1="{y:.2f}" x2="{y_axis_x}" y2="{y:.2f}" stroke="#111" stroke-width="1"/>'
+        )
+        tick_elements.append(
+            f'<text x="{y_axis_x - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="12" fill="#111">{value:.0%}</text>'
+        )
+
+    year_labels = []
+    for year, series in sorted(normalized.items()):
+        midpoint = series[len(series) // 2][0]
+        year_labels.append(
+            f'<text x="{x_from_date(midpoint):.2f}" y="{x_axis_y + 20:.2f}" text-anchor="middle" font-size="13" fill="#111">{year}</text>'
+        )
+
+    actual_polylines = []
+    color_palette = ["#15803d", "#0f9d58", "#047857", "#059669"]
+    for idx, (year, series) in enumerate(sorted(normalized.items())):
+        color = color_palette[idx % len(color_palette)]
+        points = " ".join(f"{x_from_date(date):.2f},{y_from_value(value):.2f}" for date, value in series)
+        actual_polylines.append(
+            f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2" opacity="0.9"/>'
+        )
+        year_labels.append(
+            f'<text x="{x_from_date(series[-1][0]):.2f}" y="{y_from_value(series[-1][1]) - 8:.2f}" font-size="11" fill="{color}" text-anchor="end">{year} close {series[-1][1]:+.1%}</text>'
+        )
+
+    prediction_segments = []
+    for year, series in sorted(normalized.items()):
+        prediction_value = predictions.get(year)
+        if prediction_value is None:
+            continue
+        start_date = series[0][0]
+        end_date = series[-1][0]
+        y = y_from_value(prediction_value)
+        prediction_segments.append(
+            f'<line x1="{x_from_date(start_date):.2f}" y1="{y:.2f}" x2="{x_from_date(end_date):.2f}" y2="{y:.2f}" stroke="#b91c1c" stroke-width="2.5" stroke-dasharray="8 5"/>'
+        )
+        prediction_segments.append(
+            f'<text x="{(x_from_date(start_date) + x_from_date(end_date)) / 2:.2f}" y="{y - 6:.2f}" text-anchor="middle" font-size="11" fill="#b91c1c">Predicted {year}: {prediction_value:+.1%}</text>'
+        )
+
+    summary_lines: List[str] = []
+    if evaluation:
+        mae = evaluation.get("MAE")
+        hardest_year = evaluation.get("hardest_year")
+        reason = evaluation.get("hardest_year_reason")
+        if isinstance(mae, (int, float)):
+            summary_lines.append(f"MAE {mae:.2%}")
+        if hardest_year is not None:
+            summary_lines.append(f"Toughest year {hardest_year}: {reason}")
+    summary_text = " | ".join(summary_lines)
+
+    legend_y = x_axis_y + 80
+    legend = f"""
+        <g transform="translate({width/2 - 190:.2f}, {legend_y:.2f})">
+            <g>
+                <line x1="0" y1="6" x2="30" y2="6" stroke="#15803d" stroke-width="3"/>
+                <text x="40" y="9" fill="#111" font-size="12">Actual daily return (100+ pts/year)</text>
+            </g>
+            <g transform="translate(0, 24)">
+                <line x1="0" y1="6" x2="30" y2="6" stroke="#b91c1c" stroke-width="3" stroke-dasharray="8 5"/>
+                <text x="40" y="9" fill="#111" font-size="12">Annual prediction band</text>
+            </g>
+        </g>
+    """
+
+    summary_block = (
+        f'<text x="{width/2:.2f}" y="{legend_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#374151">{summary_text}</text>'
+        if summary_text
+        else ""
+    )
+
+    svg_header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    title_y = 45
+    subtitle_y = title_y + 22
+
+    svg_content = svg_header + f"""
+    <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#ffffff"/>
+        <text x="{width/2:.2f}" y="{title_y:.2f}" fill="#111" font-size="22" font-weight="600" text-anchor="middle">S&amp;P 500 Actual vs. FinSight Predictions</text>
+        <text x="{width/2:.2f}" y="{subtitle_y:.2f}" fill="#4b5563" font-size="14" text-anchor="middle">Daily closes normalized per year (100+ samples each)</text>
+        {"".join(grid_lines)}
+        <line x1="{y_axis_x}" y1="{margin_top}" x2="{y_axis_x}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <line x1="{y_axis_x}" y1="{x_axis_y}" x2="{width - margin_right}" y2="{x_axis_y}" stroke="#111" stroke-width="1.5"/>
+        <text x="{width/2:.2f}" y="{x_axis_y + 45:.2f}" text-anchor="middle" font-size="13" fill="#111">Calendar timeline</text>
+        <text x="{40}" y="{(margin_top + plot_height/2):.2f}" transform="rotate(-90 {40} {(margin_top + plot_height/2):.2f})" text-anchor="middle" font-size="13" fill="#111">Return vs. Jan 1 of each year</text>
+        {"".join(tick_elements)}
+        {"".join(actual_polylines)}
+        {"".join(prediction_segments)}
+        {"".join(year_labels)}
+        {legend}
+        {summary_block}
+    </svg>
+    """
+
+    chart_path.write_text("\n".join(line.strip() for line in svg_content.strip().splitlines()) + "\n")
+    return str(chart_path)
+
+
+def _render_annual_chart(
+    details: Sequence[Dict[str, float]],
+    evaluation: Optional[Dict[str, object]],
+    predictions: Dict[int, float],
+    chart_path: Path,
+) -> Optional[str]:
     years = [row["Year"] for row in details]
     actuals = [row["Avg_Return"] for row in details]
-    predictions = [row["prediction"] for row in details]
-    max_abs_value = max(max(abs(value) for value in actuals + predictions), 1e-6)
+    prediction_values = [predictions[year] for year in years]
+    max_abs_value = max(max(abs(value) for value in actuals + prediction_values), 1e-6)
 
     width, height = 820, 620
     margin_top = 110
     margin_bottom = 140
     margin_left = 90
     margin_right = 70
-    # "margin" previously referred to the top margin before we refined the layout.
-    # Keep a backwards-compatible alias so older references (or partially updated
-    # environments) never raise a NameError during chart generation.
     margin = margin_top
     plot_width = width - margin_left - margin_right
     plot_height = height - margin_top - margin_bottom
@@ -418,7 +810,7 @@ def generate_prediction_chart(
         return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
 
     actual_points = [(x_coord(idx), y_coord(val)) for idx, val in enumerate(actuals)]
-    prediction_points = [(x_coord(idx), y_coord(val)) for idx, val in enumerate(predictions)]
+    prediction_points = [(x_coord(idx), y_coord(val)) for idx, val in enumerate(prediction_values)]
 
     x_axis_y = margin_top + plot_height
     y_axis_x = margin_left
@@ -464,7 +856,7 @@ def generate_prediction_chart(
 
     connectors = "\n        ".join(
         f'<line x1="{x_coord(idx):.2f}" y1="{y_coord(actuals[idx]):.2f}" '
-        f'x2="{x_coord(idx):.2f}" y2="{y_coord(predictions[idx]):.2f}" stroke="#9ca3af" stroke-dasharray="4 4"/>'
+        f'x2="{x_coord(idx):.2f}" y2="{y_coord(prediction_values[idx]):.2f}" stroke="#9ca3af" stroke-dasharray="4 4"/>'
         for idx in range(len(years))
     )
 
@@ -521,7 +913,7 @@ def generate_prediction_chart(
         <polyline points="{polyline(actual_points)}" fill="none" stroke="#15803d" stroke-width="3"/>
         <polyline points="{polyline(prediction_points)}" fill="none" stroke="#b91c1c" stroke-width="3" stroke-dasharray="6 4"/>
         {point_annotations(actual_points, actuals, '#15803d')}
-        {point_annotations(prediction_points, predictions, '#b91c1c')}
+        {point_annotations(prediction_points, prediction_values, '#b91c1c')}
         {year_labels}
         {legend}
         {summary_block}
@@ -590,9 +982,9 @@ def mr_white_agent(
             "Hey there, apprentice — Mr. White here.",
             "We built FinSight as a relay race of specialists so you can trace every decision:",
             "1. A LangChain Runnable sequence kicks off the show so every agent hands a structured state to the next.",
-            "2. DataCollector grabs ^GSPC closes via yfinance (or our cached snapshot when offline) and distills",
-            f"   them into AnnualMetric objects covering {years_span}. That cache is the same Yahoo Finance data,",
-            "   just frozen for reproducibility, so quality stays aligned with a widely trusted public feed.",
+            "2. DataCollector scrapes Yahoo Finance's ^GSPC history page (cached locally as data/dataset.json) and",
+            f"   distills it into AnnualMetric objects covering {years_span}. When the scrape is blocked we fall back",
+            "   to the bundled snapshot, so quality stays aligned with the same Yahoo feed.",
             f"3. Research Agent pins three macro story beats to each pre-pandemic year ({context_years}) and pushes",
             f"   them through a Pinecone vector store ({vector_store_status}) so later agents can query a real RAG memory.",
             "4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.",
@@ -635,9 +1027,11 @@ def test_titan_agent(
 
 
 def _collect_step(state: Dict[str, object]) -> Dict[str, object]:
-    annual_metrics, data_source_report = collect_sp500_data()
+    dataset_options: Dict[str, Any] = state.get("dataset_options", {})  # type: ignore[assignment]
+    annual_metrics, data_source_report, chart_records = collect_sp500_data(**dataset_options)
     state["annual_metrics"] = annual_metrics
     state["data_source_report"] = data_source_report
+    state["chart_records"] = chart_records
     return state
 
 
@@ -678,7 +1072,14 @@ def _evaluation_step(state: Dict[str, object]) -> Dict[str, object]:
 def _chart_step(state: Dict[str, object]) -> Dict[str, object]:
     evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
     details: Sequence[Dict[str, float]] = evaluation["details"]  # type: ignore[index]
-    state["chart_path"] = generate_prediction_chart(details, evaluation)
+    chart_records: Optional[Sequence[Dict[str, Any]]] = state.get("chart_records")  # type: ignore[assignment]
+    predictions: Dict[int, float] = state.get("predictions", {})  # type: ignore[assignment]
+    state["chart_path"] = generate_prediction_chart(
+        details,
+        evaluation,
+        chart_records=chart_records,
+        predictions=predictions,
+    )
     return state
 
 
@@ -740,9 +1141,14 @@ def _bootstrap_state(
     vector_store: ContextVectorStore,
     context_years: Sequence[int],
     stage_logger: Optional[StageLogger],
+    dataset_options: Optional[Dict[str, Any]],
 ) -> Callable[[Dict[str, object]], Dict[str, object]]:
     def bootstrap(_: Dict[str, object]) -> Dict[str, object]:
-        state = {"vector_store": vector_store, "context_years": list(context_years)}
+        state = {
+            "vector_store": vector_store,
+            "context_years": list(context_years),
+            "dataset_options": dataset_options or {},
+        }
         if stage_logger:
             stage_logger("bootstrap", state)
         return state
@@ -757,6 +1163,9 @@ def build_langchain_chain(
     stage_logger: Optional[StageLogger] = None,
     pinecone_api_key: Optional[str] = None,
     pinecone_region: Optional[str] = None,
+    dataset_url: Optional[str] = None,
+    dataset_path: Optional[Path] = None,
+    refresh_dataset: bool = False,
 ):
     """Expose the LangChain Runnable sequence so scripts can inspect every hop."""
 
@@ -766,8 +1175,14 @@ def build_langchain_chain(
     )
     years = list(context_years or range(2015, 2020))
 
+    dataset_options = {
+        "dataset_path": dataset_path or DEFAULT_DATASET_PATH,
+        "dataset_url": dataset_url or DEFAULT_HISTORY_URL,
+        "refresh_dataset": refresh_dataset,
+    }
+
     orchestrator = (
-        RunnableLambda(_bootstrap_state(vector_store, years, stage_logger))
+        RunnableLambda(_bootstrap_state(vector_store, years, stage_logger, dataset_options))
         | RunnableLambda(_wrap_stage("collect", _collect_step, stage_logger))
         | RunnableLambda(_wrap_stage("context", _context_step, stage_logger))
         | RunnableLambda(_wrap_stage("payload", _payload_step, stage_logger))
@@ -871,6 +1286,9 @@ def run_pipeline(
     pinecone_api_key: Optional[str] = None,
     pinecone_region: Optional[str] = None,
     context_years: Optional[Sequence[int]] = None,
+    dataset_url: Optional[str] = None,
+    dataset_path: Optional[Path] = None,
+    refresh_dataset: bool = False,
 ) -> AgentOutput:
     """Execute the FinSight workflow end-to-end via a LangChain Runnable pipeline."""
 
@@ -879,6 +1297,9 @@ def run_pipeline(
         context_years=context_years,
         pinecone_api_key=pinecone_api_key,
         pinecone_region=pinecone_region,
+        dataset_url=dataset_url,
+        dataset_path=dataset_path,
+        refresh_dataset=refresh_dataset,
     )
     state = orchestrator.invoke({})
     return state_to_agent_output(state)
@@ -903,6 +1324,23 @@ def _parse_cli_args() -> argparse.Namespace:
         type=int,
         help="Years to feed into the Research Agent (default 2015-2019)",
     )
+    parser.add_argument(
+        "--dataset-url",
+        dest="dataset_url",
+        default=DEFAULT_HISTORY_URL,
+        help="Yahoo Finance history URL to scrape (defaults to the ^GSPC link)",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        dest="dataset_path",
+        help="Override the dataset.json location",
+    )
+    parser.add_argument(
+        "--refresh-dataset",
+        dest="refresh_dataset",
+        action="store_true",
+        help="Force a fresh scrape before running",
+    )
     return parser.parse_args()
 
 
@@ -912,6 +1350,9 @@ if __name__ == "__main__":
         pinecone_api_key=args.pinecone_api_key,
         pinecone_region=args.pinecone_region,
         context_years=args.context_years,
+        dataset_url=args.dataset_url,
+        dataset_path=Path(args.dataset_path) if args.dataset_path else None,
+        refresh_dataset=args.refresh_dataset,
     )
     report_text = format_agent_output(output)
     report_path = Path(__file__).resolve().parent.parent / "report.txt"

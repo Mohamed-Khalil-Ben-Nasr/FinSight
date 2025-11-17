@@ -1,22 +1,31 @@
-"""Refresh the cached S&P 500 annual metrics snapshot using yfinance/pandas."""
+"""Scrape Yahoo Finance and refresh the cached datasets."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
-import pandas as pd
-import yfinance as yf
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from finsight.pipeline import _compute_metrics_from_history
+from finsight.pipeline import (
+    DEFAULT_DATASET_PATH,
+    DEFAULT_HISTORY_URL,
+    compute_metrics_from_daily_records,
+    load_history_dataset,
+)
 
 
 def main() -> None:
-    ticker = yf.Ticker("^GSPC")
-    history = ticker.history(start="2015-01-01", end="2022-12-31")
-    if history.empty:
-        raise RuntimeError("yfinance returned an empty frame; check the ticker or date range")
+    dataset, note = load_history_dataset(
+        dataset_path=DEFAULT_DATASET_PATH,
+        dataset_url=DEFAULT_HISTORY_URL,
+        refresh=True,
+    )
+    print(note)
 
-    metrics = _compute_metrics_from_history(history)
+    metrics = compute_metrics_from_daily_records(dataset)
     payload = [
         {"Year": metric.year, "Avg_Return": metric.avg_return, "Volatility": metric.volatility}
         for metric in metrics
