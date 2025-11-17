@@ -1,0 +1,10 @@
+[
+  {"Year": 2015, "Avg_Return": -0.0073, "Volatility": 0.15},
+  {"Year": 2016, "Avg_Return": 0.0954, "Volatility": 0.13},
+  {"Year": 2017, "Avg_Return": 0.1942, "Volatility": 0.10},
+  {"Year": 2018, "Avg_Return": -0.0624, "Volatility": 0.17},
+  {"Year": 2019, "Avg_Return": 0.2888, "Volatility": 0.12},
+  {"Year": 2020, "Avg_Return": 0.1626, "Volatility": 0.34},
+  {"Year": 2021, "Avg_Return": 0.2689, "Volatility": 0.14},
+  {"Year": 2022, "Avg_Return": -0.1944, "Volatility": 0.24}
+]
