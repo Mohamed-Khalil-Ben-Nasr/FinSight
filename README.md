@@ -6,6 +6,12 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 - **Motivation:** Demonstrate how modern AI infrastructure can support financial intelligence pipelines, prediction markets, or research workflows that require explainable insights.
 - **Deliverables:** A reproducible pipeline that outputs (1) the full agent conversation, (2) an evaluation with MAE/error diagnostics, (3) a Finance Bro summary, (4) refinement recommendations, and (5) an SVG chart mapping predictions vs. actuals.
 
+## Current Status (Goal ✅ Achieved)
+- **Functional pipeline:** `python -m finsight.pipeline` runs end-to-end today, even on locked-down laptops, because it dynamically swaps between live `yfinance`/`pandas` pulls and the bundled dataset.
+- **LangChain orchestration:** The agents are wired together through `build_langchain_chain()` inside `finsight.pipeline`, so you can reuse the Runnable graph elsewhere or observe it via `scripts/run_langchain_workflow.py`.
+- **Chart + explanation:** Every successful run emits `artifacts/predictions_vs_actual.svg` and an `AgentOutput` structure that includes Finance Bro’s summary, Test Titan’s verdict, and Mr White’s tutorial—all based on the code committed in this repo.
+- **Testing baked in:** Test Titan’s checks are part of the chain; the run only reports success after verifying data coverage, numeric metrics, and chart creation. When dependencies are installed, `pip install -r requirements.txt && python -m finsight.pipeline` demonstrates the full live-data path.
+
 ## Agent Overview
 | Agent | Responsibility |
 | --- | --- |
@@ -16,7 +22,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 | **Test Titan** | Runs sanity checks on every payload (data coverage, numeric MAE, etc.) and prints `All tests passed ✅` when everything looks good. |
 | **Finance Bro** | Explains the evaluator’s findings in plain English and links to the SVG chart. |
 | **Refinement Agent** | Suggests concrete improvements (new indicators, crisis detectors, sentiment inputs, …). |
-| **Mr White** | Acts as the mentor who walks a passionate student through the architecture and explains how every agent hands off to the next. |
+| **Mr White** | Acts as the mentor who walks a passionate student through the architecture and explains how every agent hands off to the next, quoting the live `AgentOutput` state so the story matches the code. |
 | **Lord of the Mysteries** | The orchestration layer that keeps the agents in sync and synthesizes the final report. |
 
 ## Workflow Summary
@@ -51,6 +57,7 @@ FinSight is a multi-agent AI workflow that autonomously collects, analyzes, and 
 > “A LangChain Runnable sequence kicks off the show so every agent hands a structured state to the next. The Research Agent ships its macro bullets into Pinecone (or the offline mirror) so later agents can tap a real RAG memory.” – Mr White
 
 - **LangChain orchestration:** `run_pipeline()` is defined as a chain of `RunnableLambda` steps (DataCollector → Research → Prediction → Evaluation → Finance → Refinement → Testing → Mentorship). LangChain keeps the state dictionary flowing so each agent only focuses on its own contract.
+- **Runnable source of truth:** The same graph is exposed through `build_langchain_chain()` inside `finsight/pipeline.py`, which means other scripts—or your own experiments—can call the Runnable directly without reimplementing the glue.
 - **Offline fallback:** When the real `langchain` package is unavailable (e.g., on a locked-down interview laptop), FinSight automatically swaps in a tiny compatible shim so the same Runnable chain executes without breaking the narrative.
 - **Pinecone usage:** `ContextVectorStore` wraps the Pinecone serverless client. When `PINECONE_API_KEY` (and optionally `PINECONE_REGION`, default `us-east-1`) is present, the Research Agent upserts yearly macro summaries into the `finsight-market-events` index and immediately fetches them for downstream agents. Without credentials, the same interface falls back to a deterministic in-memory vector store, but the Mentorship log still reports the Pinecone status so you know which path ran.
 - **Status tracking:** Every pipeline run records `vector_store_status` inside `AgentOutput`, and Mr White echoes it in his explanation so interviewers can see whether the live Pinecone integration or the local mock handled the context.
@@ -88,3 +95,5 @@ python -m finsight.pipeline
 - **Chart:** After running the pipeline, open `artifacts/predictions_vs_actual.svg` in any browser to see the predicted vs. actual returns for 2020–2022.
 - **Agent report:** The console output printed by `python -m finsight.pipeline` contains the structured `AgentOutput` object. It lists the historical metrics, macro context, predictions with rationales, evaluation stats (including MAE and hardest year), Finance Bro’s explanation, refinement ideas, the absolute path to the chart, **and** the `vector_store_status` so you can cite whether Pinecone or the local replica supplied the memories.
 - **Reusable data:** The cached dataset lives at `data/sp500_annual_metrics_2015_2022.json`, so you can reset or re-run the workflow offline anytime.
+
+Bring this README to your interview: it covers the pitch, the architecture, and exactly how to reproduce the results—including where to find the visual evidence.
