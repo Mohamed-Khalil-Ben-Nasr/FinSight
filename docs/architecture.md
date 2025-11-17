@@ -17,26 +17,26 @@ FinSight orchestrates a sequence of specialized agents to transform raw S&P 500 
 
 3. **Prediction Preparation**
    - **Agent:** LangChain Orchestrator (a RunnableLambda step implemented by the Coding Demon)
-   - **Input:** Historical annual metrics (2015–2019) and the Pinecone-backed context dictionary.
-   - **Process:** Align numeric features with qualitative context to form a feature pack for downstream reasoning agents.
-   - **Output:** Structured payload `{"metrics": df_2015_2019, "context": events}`.
+   - **Input:** Historical annual metrics (2015–2019), Pinecone-backed context, and the raw daily candles scraped in Step 1.
+   - **Process:** Align numeric features with qualitative context, then bundle the per-day candles so the Prediction Agent can operate at trading-day granularity.
+   - **Output:** Structured payload `{"metrics": df_2015_2019, "context": events, "chart_records": candles}`.
 
-4. **Forecasting**  
-   - **Agent:** Prediction Agent  
-   - **Input:** Feature pack from Step 3.  
-   - **Process:** Apply reasoning/heuristics over historical patterns and macro context to infer annual returns for 2020–2022.  
-   - **Output:** Dict `{2020: pred_return, 2021: ..., 2022: ...}` with textual rationale per year.
+4. **Forecasting**
+   - **Agent:** Prediction Agent
+   - **Input:** Feature pack from Step 3.
+   - **Process:** Apply reasoning/heuristics over historical patterns and macro context to infer **daily** price paths for every trading session in 2020–2022 (capped/adjusted per year), then derive the annual returns. Persist the trading-day predictions to `artifacts/daily_predictions_2020_2022.json` for inspection.
+   - **Output:** Dict `{2020: pred_return, 2021: ..., 2022: ...}` with textual rationale per year **plus** the saved daily predictions dataset.
 
-5. **Evaluation**  
-   - **Agent:** Evaluator  
-   - **Input:** Predictions from Step 4 and actual metrics from Step 1.  
-   - **Process:** Compute Mean Absolute Error (MAE), highlight most difficult year and diagnostic comments.  
-   - **Output:** Evaluation report containing MAE, per-year error, and insights.
+5. **Evaluation**
+   - **Agent:** Evaluator
+   - **Input:** Predictions from Step 4, actual metrics from Step 1, and the aligned daily candles.
+   - **Process:** Compute Mean Absolute Error (MAE), daily Mean Absolute Percentage Error (MAPE) across every overlapping trading day, and highlight the most difficult year with diagnostic comments.
+   - **Output:** Evaluation report containing MAE, daily MAPE, per-year error, and insights.
 
 6. **Communication & Visualization**
    - **Agent:** Finance Bro (paired with a lightweight SVG chart generator)
-   - **Input:** Evaluation report (including per-year actual vs. predicted returns).
-   - **Process:** Render a quick comparison chart (SVG stored under `artifacts/`) and translate technical findings into plain-English summary that references the visualization.
+   - **Input:** Evaluation report (including per-year and daily stats) plus the daily prediction dataset.
+   - **Process:** Render a daily Actual vs. Predicted comparison chart (SVG stored under `artifacts/`) and translate technical findings—including daily MAPE—into a plain-English summary that references the visualization.
    - **Output:** Friendly narrative for non-technical audiences plus an embeddable chart path.
 
 7. **Testing & Validation**  

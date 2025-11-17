@@ -2,8 +2,9 @@ FinSight Multi-Agent Report
 =============================
 Data source: yahoo_history_html
 Source notes: Loaded 2086 rows from dataset.json
-Vector store status: pinecone_local_memory:import_error:Exception
+Vector store status: pinecone_local_memory:no_api_key
 Chart: artifacts/predictions_vs_actual.svg
+Daily predictions: artifacts/daily_predictions_2020_2022.json
 
 Annual Metrics (2015-2022)
 Year    Return     Volatility
@@ -40,14 +41,15 @@ Context Highlights
 
 Predictions vs. Actuals
 Year    Actual     Predicted    Error
-2020     +26.76%       +2.37%    +24.40%
-2021     +22.89%      +25.37%     +2.48%
-2022     -30.82%      +12.37%    +43.19%
+2020     +26.76%       -3.46%    +30.23%
+2021     +22.89%      +10.00%    +12.89%
+2022     -30.82%      +16.87%    +47.69%
 
-MAE: 23.36% (hardest year: 2022 — Structural shift not captured)
+MAE: 30.27% (hardest year: 2022 — Structural shift not captured)
+Daily MAPE: 18.87% across 783 trading days
 
 Finance Bro
-Our calls were off by about 23.36% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
+Our calls were off by about 30.27% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. We tracked 783 trading days with a 18.87% daily miss rate. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
 
 Refinement Suggestions
 - Blend macro indicators (CPI, unemployment) with the return features to capture regime shifts.
@@ -62,15 +64,17 @@ We built FinSight as a relay race of specialists so you can trace every decision
    distills it into AnnualMetric objects covering 2015–2022. When the scrape is blocked we fall back
    to the bundled snapshot, so quality stays aligned with the same Yahoo feed.
 3. Research Agent pins three macro story beats to each pre-pandemic year (2015, 2016, 2017, 2018, 2019) and pushes
-   them through a Pinecone vector store (pinecone_local_memory:import_error:Exception) so later agents can query a real RAG memory.
-4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.
-5. Evaluator cross-checks predictions against actual returns, reports MAE and toughest year,
-   which this run pegs at 23.36% average error with 2022 hardest because Structural shift not captured.
+   them through a Pinecone vector store (pinecone_local_memory:no_api_key) so later agents can query a real RAG memory.
+4. Prediction Agent studies those 2015–2019 patterns, then writes daily 2020–2022 forecasts
+   straight into artifacts/daily_predictions_2020_2022.json so you can inspect
+   every trading-day guess alongside the narratives.
+5. Evaluator cross-checks predictions against actual returns (annual + daily), reports MAE and toughest year,
+   which this run pegs at 30.27% average error with 2022 hardest because Structural shift not captured.
 6. Finance Bro translates that into street language and points everyone to the SVG comparison chart.
 7. Refinement Agent turns the misses into a backlog of upgrades so the next version learns.
 8. Test Titan enforces contracts (no missing years, numeric MAE) before anyone declares victory.
 9. Lord of the Mysteries packages everything and I, Mr. White, narrate the architecture so your
    curious mind sees how multi-agent orchestration feels in practice.
 Data source this round: yahoo_history_html. Loaded 2086 rows from dataset.json
-Finance Bro's verdict: Our calls were off by about 23.36% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
+Finance Bro's verdict: Our calls were off by about 30.27% on average. The trickiest year was 2022 because Rate hikes and inflation jitters twisted the plot harder than expected.. We tracked 783 trading days with a 18.87% daily miss rate. Peep the chart at artifacts/predictions_vs_actual.svg to see predictions vs. reality.
 Next experiments on deck: Blend macro indicators (CPI, unemployment) with the return features to capture regime shifts.; Layer a sentiment score from earnings calls or news headlines to react faster to shocks.; Use rolling walk-forward validation so the Prediction Agent continually re-trains with the latest year.

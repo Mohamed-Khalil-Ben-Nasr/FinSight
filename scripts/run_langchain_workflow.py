@@ -75,6 +75,8 @@ def main() -> None:
     print("\nLangChain stages executed (in order):", " -> ".join(stage_log))
     print("Finance Bro summary:\n", output.finance_bro_summary)
     print("Chart saved at:", output.chart_path)
+    if output.daily_predictions_path:
+        print("Daily predictions dataset:", output.daily_predictions_path)
 
     if output.chart_path:
         path = Path(output.chart_path)

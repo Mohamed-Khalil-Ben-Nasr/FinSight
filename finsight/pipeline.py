@@ -92,6 +92,7 @@ class AgentOutput:
     mr_white_briefing: str
     vector_store_status: str
     data_source_report: DataSourceReport
+    daily_predictions_path: Optional[str]
 
 
 StageLogger = Callable[[str, Dict[str, object]], None]
@@ -465,7 +466,9 @@ def _filter_metrics(annual_metrics: Sequence[AnnualMetric], years: Iterable[int]
 
 
 def build_prediction_payload(
-    annual_metrics: Sequence[AnnualMetric], context: Dict[int, List[str]]
+    annual_metrics: Sequence[AnnualMetric],
+    context: Dict[int, List[str]],
+    chart_records: Sequence[Dict[str, Any]],
 ) -> Dict[str, object]:
     """Create the structured payload for the Prediction Agent."""
 
@@ -473,50 +476,111 @@ def build_prediction_payload(
     metrics = _filter_metrics(annual_metrics, context_years)
     if not metrics:
         raise ValueError("No historical metrics available for prediction payload.")
-    return {"metrics": metrics, "context": context}
+    return {"metrics": metrics, "context": context, "chart_records": list(chart_records)}
 
 
-def prediction_agent(payload: Dict[str, object]) -> Tuple[Dict[int, float], Dict[int, str]]:
-    """Predict 2020-2022 returns using a simple heuristic and context."""
+def prediction_agent(
+    payload: Dict[str, object]
+) -> Tuple[Dict[int, float], Dict[int, str], List[Dict[str, object]]]:
+    """Predict 2020-2022 daily closes plus annualized summaries."""
 
     metrics: List[AnnualMetric] = sorted(payload["metrics"], key=lambda item: item.year)
+    chart_records: List[Dict[str, Any]] = list(payload.get("chart_records", []))
+    if not chart_records:
+        raise ValueError("Chart records are required for daily predictions.")
+
     trailing_returns = [metric.avg_return for metric in metrics[-3:]] or [0.0]
     baseline = float(mean(trailing_returns))
 
-    predictions = {}
-    rationales = {}
+    sorted_records = sorted(chart_records, key=lambda rec: rec["Date"])
+    template_returns: List[float] = []
+    prev_close: Optional[float] = None
+    for record in sorted_records:
+        date = dt.date.fromisoformat(str(record["Date"]))
+        close = float(record["Close"])
+        if prev_close is not None and date.year <= 2019:
+            template_returns.append((close / prev_close) - 1.0)
+        prev_close = close
 
-    def add_prediction(year: int, adjustment: float, narrative: str) -> None:
-        predictions[year] = baseline + adjustment
-        rationales[year] = narrative
+    if not template_returns:
+        default_daily = ((1 + baseline) ** (1 / 252)) - 1
+        template_returns = [default_daily] * 252
 
-    add_prediction(
-        2020,
-        adjustment=-0.15,
-        narrative=(
-            "COVID-19 shock and global shutdowns point to a sharp drawdown despite the prior expansion."
-        ),
-    )
-    add_prediction(
-        2021,
-        adjustment=0.08,
-        narrative=(
-            "Reopening momentum, fiscal stimulus, and ultra-loose monetary policy set the stage for a rebound."
-        ),
-    )
-    add_prediction(
-        2022,
-        adjustment=-0.05,
-        narrative=(
-            "Inflation spikes and aggressive Fed tightening suggest renewed volatility and downside pressure."
-        ),
-    )
+    start_close = None
+    for record in reversed(sorted_records):
+        date = dt.date.fromisoformat(str(record["Date"]))
+        if date < dt.date(2020, 1, 1):
+            start_close = float(record["Close"])
+            break
+    if start_close is None and sorted_records:
+        start_close = float(sorted_records[0]["Close"])
+    if start_close is None:
+        raise ValueError("Unable to seed prediction series without a starting close.")
 
-    return predictions, rationales
+    adjustments = {
+        2020: -0.45,
+        2021: 0.15,
+        2022: -0.25,
+    }
+    narratives = {
+        2020: "COVID-19 shock and global shutdowns point to a sharp drawdown despite the prior expansion.",
+        2021: "Reopening momentum, fiscal stimulus, and ultra-loose monetary policy set the stage for a rebound.",
+        2022: "Inflation spikes and aggressive Fed tightening suggest renewed volatility and downside pressure.",
+    }
+
+    predictions: Dict[int, float] = {}
+    rationales = narratives.copy()
+    daily_predictions: List[Dict[str, object]] = []
+
+    template_len = len(template_returns)
+    template_index = 0
+    prev_pred_close = start_close
+
+    for record in sorted_records:
+        date = dt.date.fromisoformat(str(record["Date"]))
+        if date < dt.date(2020, 1, 1):
+            continue
+        if date > dt.date(2022, 12, 31):
+            break
+        base_return = template_returns[template_index % template_len]
+        template_index += 1
+        adjustment = adjustments.get(date.year, 0.0)
+        scaled_return = max(min(base_return * (1 + adjustment), 0.04), -0.04)
+        prev_pred_close *= 1 + scaled_return
+        daily_predictions.append(
+            {
+                "Date": record["Date"],
+                "Year": date.year,
+                "PredictedClose": round(prev_pred_close, 4),
+                "PredictedReturn": round(scaled_return, 6),
+            }
+        )
+
+    grouped: Dict[int, List[Dict[str, object]]] = {}
+    for row in daily_predictions:
+        grouped.setdefault(int(row["Year"]), []).append(row)
+
+    for year in (2020, 2021, 2022):
+        rows = grouped.get(year)
+        if not rows:
+            continue
+        start_value = float(rows[0]["PredictedClose"])
+        end_value = float(rows[-1]["PredictedClose"])
+        if start_value == 0:
+            continue
+        predictions[year] = (end_value / start_value) - 1
+
+    return predictions, rationales, daily_predictions
 
 
-def evaluator_agent(predictions: Dict[int, float], annual_metrics: Sequence[AnnualMetric]) -> Dict[str, object]:
-    """Compare predictions with actual results for 2020-2022."""
+def evaluator_agent(
+    predictions: Dict[int, float],
+    annual_metrics: Sequence[AnnualMetric],
+    *,
+    chart_records: Optional[Sequence[Dict[str, Any]]] = None,
+    daily_predictions: Optional[Sequence[Dict[str, object]]] = None,
+) -> Dict[str, object]:
+    """Compare predictions with actual annual and daily results for 2020-2022."""
 
     actual_lookup = {metric.year: metric for metric in annual_metrics if 2020 <= metric.year <= 2022}
     if len(actual_lookup) < 3:
@@ -545,7 +609,43 @@ def evaluator_agent(predictions: Dict[int, float], annual_metrics: Sequence[Annu
             "Large shock relative to heuristic baseline" if hardest_year == 2020 else "Structural shift not captured"
         ),
     }
+
+    if chart_records and daily_predictions:
+        actual_map: Dict[str, float] = {}
+        for record in chart_records:
+            date = str(record["Date"])
+            year = dt.date.fromisoformat(date).year
+            if 2020 <= year <= 2022:
+                actual_map[date] = float(record["Close"])
+
+        daily_errors: List[float] = []
+        for row in daily_predictions:
+            date = str(row["Date"])
+            if date not in actual_map:
+                continue
+            actual_close = actual_map[date]
+            predicted_close = float(row["PredictedClose"])
+            if actual_close == 0:
+                continue
+            daily_errors.append(abs(predicted_close - actual_close) / actual_close)
+
+        if daily_errors:
+            evaluation["daily_mape"] = float(mean(daily_errors))
+            evaluation["daily_points"] = len(daily_errors)
+
     return evaluation
+
+
+def _write_daily_prediction_dataset(
+    daily_predictions: Sequence[Dict[str, object]], output_dir: str = "artifacts"
+) -> Optional[str]:
+    if not daily_predictions:
+        return None
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    dataset_path = output_path / "daily_predictions_2020_2022.json"
+    dataset_path.write_text(json.dumps(list(daily_predictions), indent=2))
+    return str(dataset_path)
 
 
 def generate_prediction_chart(
@@ -554,23 +654,30 @@ def generate_prediction_chart(
     *,
     chart_records: Optional[Sequence[Dict[str, Any]]] = None,
     predictions: Optional[Dict[int, float]] = None,
+    daily_predictions: Optional[Sequence[Dict[str, object]]] = None,
+    actual_records: Optional[Sequence[Dict[str, Any]]] = None,
     output_dir: str = "artifacts",
     min_points_per_year: int = 100,
 ) -> Optional[str]:
-    """Render the requested 2020–2022 Actual vs. Predicted line chart."""
+    """Render the requested Actual vs. Predicted comparison chart."""
 
     if not details:
         return None
-
-    # These parameters remain in the signature for backward compatibility with
-    # earlier dense-chart pipelines but are intentionally ignored now that the
-    # user requested a focused 2020–2022 view.
-    _ = (chart_records, min_points_per_year)
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     chart_path = output_path / "predictions_vs_actual.svg"
 
+    actual_series_records = actual_records or chart_records
+    if daily_predictions and actual_series_records:
+        return _render_daily_prediction_chart(
+            actual_series_records,
+            daily_predictions,
+            evaluation,
+            chart_path,
+        )
+
+    # Fallback to the annual window chart when daily points are unavailable.
     predictions = predictions or {int(row["Year"]): float(row["prediction"]) for row in details}
 
     filtered_years = [year for year in sorted(predictions) if 2020 <= year <= 2022]
@@ -590,6 +697,139 @@ def generate_prediction_chart(
     )
 
 
+
+
+def _render_daily_prediction_chart(
+    actual_records: Sequence[Dict[str, Any]],
+    predicted_records: Sequence[Dict[str, object]],
+    evaluation: Optional[Dict[str, object]],
+    chart_path: Path,
+) -> Optional[str]:
+    actual_map: Dict[dt.date, float] = {}
+    for record in actual_records:
+        date = dt.date.fromisoformat(str(record["Date"]))
+        if dt.date(2020, 1, 1) <= date <= dt.date(2022, 12, 31):
+            actual_map[date] = float(record["Close"])
+
+    predicted_map: Dict[dt.date, float] = {}
+    for row in predicted_records:
+        date = dt.date.fromisoformat(str(row["Date"]))
+        if dt.date(2020, 1, 1) <= date <= dt.date(2022, 12, 31):
+            predicted_map[date] = float(row["PredictedClose"])
+
+    common_dates = sorted(set(actual_map.keys()) & set(predicted_map.keys()))
+    if len(common_dates) < 30:
+        return None
+
+    width, height = 980, 640
+    margin_top = 120
+    margin_bottom = 160
+    margin_left = 90
+    margin_right = 80
+    plot_width = width - margin_left - margin_right
+    plot_height = height - margin_top - margin_bottom
+
+    actual_values = [actual_map[date] for date in common_dates]
+    predicted_values = [predicted_map[date] for date in common_dates]
+    min_value = min(actual_values + predicted_values)
+    max_value = max(actual_values + predicted_values)
+    padding = max(50.0, (max_value - min_value) * 0.1)
+    min_value -= padding
+    max_value += padding
+    value_range = max(max_value - min_value, 1e-6)
+
+    def x_coord(index: int) -> float:
+        if len(common_dates) == 1:
+            return margin_left + plot_width / 2
+        return margin_left + (plot_width * index / (len(common_dates) - 1))
+
+    def y_coord(value: float) -> float:
+        return margin_top + plot_height - ((value - min_value) / value_range) * plot_height
+
+    def polyline(values: Sequence[float]) -> str:
+        return " ".join(f"{x_coord(idx):.2f},{y_coord(val):.2f}" for idx, val in enumerate(values))
+
+    grid_lines = []
+    y_labels = []
+    y_ticks = 6
+    for i in range(y_ticks + 1):
+        value = min_value + (value_range / y_ticks) * i
+        y = y_coord(value)
+        grid_lines.append(
+            f"<line x1='{margin_left}' y1='{y:.2f}' x2='{width - margin_right}' y2='{y:.2f}' stroke='#e5e7eb' stroke-width='1'/>"
+        )
+        y_labels.append(
+            f"<text x='{margin_left - 12}' y='{y + 4:.2f}' font-size='12' fill='#111827' text-anchor='end'>{value:,.0f}</text>"
+        )
+
+    x_axis = margin_top + plot_height
+    year_labels = []
+    seen_years: set[int] = set()
+    for idx, date in enumerate(common_dates):
+        if date.year not in seen_years:
+            seen_years.add(date.year)
+            year_labels.append(
+                f"<text x='{x_coord(idx):.2f}' y='{x_axis + 24:.2f}' font-size='12' fill='#111827' text-anchor='middle'>{date.year}</text>"
+            )
+    last_idx = len(common_dates) - 1
+    year_labels.append(
+        f"<text x='{x_coord(last_idx):.2f}' y='{x_axis + 24:.2f}' font-size='12' fill='#111827' text-anchor='middle'>{common_dates[-1].strftime('%b %Y')}</text>"
+    )
+
+    actual_path = polyline(actual_values)
+    predicted_path = polyline(predicted_values)
+
+    eval_text = ""
+    if evaluation:
+        mae = evaluation.get("MAE")
+        hardest_year = evaluation.get("hardest_year")
+        reason = evaluation.get("hardest_year_reason")
+        daily_mape = evaluation.get("daily_mape")
+        parts = []
+        if mae is not None and hardest_year is not None:
+            parts.append(f"MAE {float(mae):.2%} | Toughest year {hardest_year}: {reason}")
+        if isinstance(daily_mape, (int, float)):
+            parts.append(f"Daily MAPE {daily_mape:.2%}")
+        eval_text = " | ".join(parts)
+
+    legend_y = margin_top + plot_height + 45
+    legend = (
+        f"<g transform='translate({margin_left}, {legend_y})'>"
+        f"<g><rect width='20' height='4' fill='#065f46' y='4'/><text x='30' y='12' font-size='12' fill='#111827'>Actual close</text></g>"
+        f"<g transform='translate(220,0)'><rect width='20' height='4' fill='#b91c1c' y='4'/><text x='30' y='12' font-size='12' fill='#111827'>Predicted close</text></g>"
+        f"</g>"
+    )
+
+    comments = (
+        f"<text x='{margin_left}' y='{legend_y + 40}' font-size='12' fill='#374151'>{eval_text}</text>"
+        if eval_text
+        else ""
+    )
+
+    title = "S&amp;P 500 Actual vs. FinSight Predicted Daily Close"
+    subtitle = "Forecast window: 2020-2022 (daily granularity)"
+
+    svg_content = f"""<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>
+  <rect width='100%' height='100%' fill='white'/>
+  <text x='{width/2}' y='40' text-anchor='middle' font-size='24' fill='#111827' font-weight='600'>{title}</text>
+  <text x='{width/2}' y='70' text-anchor='middle' font-size='15' fill='#374151'>{subtitle}</text>
+  <line x1='{margin_left}' y1='{margin_top}' x2='{margin_left}' y2='{margin_top + plot_height}' stroke='#111827' stroke-width='1.2'/>
+  <line x1='{margin_left}' y1='{x_axis}' x2='{margin_left + plot_width}' y2='{x_axis}' stroke='#111827' stroke-width='1.2'/>
+  {''.join(grid_lines)}
+  {''.join(y_labels)}
+  {''.join(year_labels)}
+  <text x='{margin_left + plot_width / 2}' y='{x_axis + 55}' text-anchor='middle' font-size='13' fill='#374151'>Trading days</text>
+  <text x='20' y='{margin_top + plot_height / 2}' text-anchor='middle' font-size='13' fill='#374151' transform='rotate(-90 20,{margin_top + plot_height / 2})'>Close price</text>
+  <polyline points='{actual_path}' fill='none' stroke='#047857' stroke-width='2.2'/>
+  <polyline points='{predicted_path}' fill='none' stroke='#dc2626' stroke-width='2.2' stroke-dasharray='10,6'/>
+  {legend}
+  {comments}
+</svg>
+"""
+
+    chart_path.write_text(svg_content.strip() + "\n")
+    return str(chart_path)
 
 
 def _render_prediction_window_chart(
@@ -898,9 +1138,15 @@ def finance_bro_agent(evaluation: Dict[str, object], chart_path: Optional[str]) 
         reason = "Rate hikes and inflation jitters twisted the plot harder than expected."
 
     chart_sentence = f" Peep the chart at {chart_path} to see predictions vs. reality." if chart_path else ""
+    daily_mape = evaluation.get("daily_mape")
+    daily_points = evaluation.get("daily_points")
+    daily_sentence = ""
+    if isinstance(daily_mape, (int, float)) and isinstance(daily_points, int):
+        daily_sentence = f" We tracked {daily_points} trading days with a {daily_mape:.2%} daily miss rate."
 
     return (
         f"Our calls were off by about {mae:.2%} on average. The trickiest year was {hardest_year} because {reason}."
+        + daily_sentence
         + chart_sentence
     )
 
@@ -927,6 +1173,7 @@ def mr_white_agent(
     refinement_suggestions: Sequence[str],
     vector_store_status: str,
     data_source_report: DataSourceReport,
+    daily_predictions_path: Optional[str] = None,
 ) -> str:
     """Explain the architecture to a curious student in a didactic tone."""
 
@@ -948,8 +1195,10 @@ def mr_white_agent(
             "   to the bundled snapshot, so quality stays aligned with the same Yahoo feed.",
             f"3. Research Agent pins three macro story beats to each pre-pandemic year ({context_years}) and pushes",
             f"   them through a Pinecone vector store ({vector_store_status}) so later agents can query a real RAG memory.",
-            "4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.",
-            "5. Evaluator cross-checks predictions against actual returns, reports MAE and toughest year,",
+            "4. Prediction Agent studies those 2015–2019 patterns, then writes daily 2020–2022 forecasts",
+            f"   straight into {daily_predictions_path or 'artifacts/daily_predictions_2020_2022.json'} so you can inspect",
+            "   every trading-day guess alongside the narratives.",
+            "5. Evaluator cross-checks predictions against actual returns (annual + daily), reports MAE and toughest year,",
             f"   which this run pegs at {mae:.2%} average error with {hardest_year} hardest because {hardest_reason}.",
             "6. Finance Bro translates that into street language and points everyone to the SVG comparison chart.",
             "7. Refinement Agent turns the misses into a backlog of upgrades so the next version learns.",
@@ -1008,22 +1257,34 @@ def _context_step(state: Dict[str, object]) -> Dict[str, object]:
 def _payload_step(state: Dict[str, object]) -> Dict[str, object]:
     annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
     context: Dict[int, List[str]] = state["context"]  # type: ignore[assignment]
-    state["payload"] = build_prediction_payload(annual_metrics, context)
+    chart_records: Sequence[Dict[str, Any]] = state.get("chart_records", [])  # type: ignore[assignment]
+    state["payload"] = build_prediction_payload(annual_metrics, context, chart_records)
     return state
 
 
 def _prediction_step(state: Dict[str, object]) -> Dict[str, object]:
     payload: Dict[str, object] = state["payload"]  # type: ignore[assignment]
-    predictions, rationales = prediction_agent(payload)
+    predictions, rationales, daily_predictions = prediction_agent(payload)
     state["predictions"] = predictions
     state["rationales"] = rationales
+    state["daily_predictions"] = daily_predictions
+    dataset_path = _write_daily_prediction_dataset(daily_predictions)
+    if dataset_path:
+        state["daily_predictions_path"] = dataset_path
     return state
 
 
 def _evaluation_step(state: Dict[str, object]) -> Dict[str, object]:
     predictions: Dict[int, float] = state["predictions"]  # type: ignore[assignment]
     annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
-    evaluation = evaluator_agent(predictions, annual_metrics)
+    chart_records: Sequence[Dict[str, Any]] = state.get("chart_records", [])  # type: ignore[assignment]
+    daily_predictions: Sequence[Dict[str, object]] = state.get("daily_predictions", [])  # type: ignore[assignment]
+    evaluation = evaluator_agent(
+        predictions,
+        annual_metrics,
+        chart_records=chart_records,
+        daily_predictions=daily_predictions,
+    )
     data_report: DataSourceReport = state["data_source_report"]  # type: ignore[assignment]
     evaluation["data_source"] = data_report.source
     state["evaluation"] = evaluation
@@ -1035,11 +1296,14 @@ def _chart_step(state: Dict[str, object]) -> Dict[str, object]:
     details: Sequence[Dict[str, float]] = evaluation["details"]  # type: ignore[index]
     chart_records: Optional[Sequence[Dict[str, Any]]] = state.get("chart_records")  # type: ignore[assignment]
     predictions: Dict[int, float] = state.get("predictions", {})  # type: ignore[assignment]
+    daily_predictions: Sequence[Dict[str, object]] = state.get("daily_predictions", [])  # type: ignore[assignment]
     state["chart_path"] = generate_prediction_chart(
         details,
         evaluation,
         chart_records=chart_records,
         predictions=predictions,
+        daily_predictions=daily_predictions,
+        actual_records=chart_records,
     )
     return state
 
@@ -1075,6 +1339,7 @@ def _mentor_step(state: Dict[str, object]) -> Dict[str, object]:
     suggestions: Sequence[str] = state["refinement_suggestions"]  # type: ignore[assignment]
     vector_store_status: str = state["vector_store_status"]  # type: ignore[assignment]
     data_report: DataSourceReport = state["data_source_report"]  # type: ignore[assignment]
+    daily_predictions_path: Optional[str] = state.get("daily_predictions_path")
     state["mr_white_briefing"] = mr_white_agent(
         annual_metrics,
         context,
@@ -1084,6 +1349,7 @@ def _mentor_step(state: Dict[str, object]) -> Dict[str, object]:
         suggestions,
         vector_store_status,
         data_report,
+        daily_predictions_path,
     )
     return state
 
@@ -1174,6 +1440,7 @@ def state_to_agent_output(state: Dict[str, object]) -> AgentOutput:
         mr_white_briefing=state["mr_white_briefing"],
         vector_store_status=state["vector_store_status"],
         data_source_report=state["data_source_report"],
+        daily_predictions_path=state.get("daily_predictions_path"),
     )
 
 
@@ -1191,6 +1458,8 @@ def format_agent_output(output: AgentOutput) -> str:
     lines.append(f"Vector store status: {output.vector_store_status}")
     if output.chart_path:
         lines.append(f"Chart: {output.chart_path}")
+    if output.daily_predictions_path:
+        lines.append(f"Daily predictions: {output.daily_predictions_path}")
     lines.append("")
 
     lines.append("Annual Metrics (2015-2022)")
@@ -1224,6 +1493,10 @@ def format_agent_output(output: AgentOutput) -> str:
     hardest_year = output.evaluation.get("hardest_year")
     reason = output.evaluation.get("hardest_year_reason")
     lines.append(f"MAE: {mae_str} (hardest year: {hardest_year} — {reason})")
+    daily_mape = output.evaluation.get("daily_mape")
+    daily_points = output.evaluation.get("daily_points")
+    if isinstance(daily_mape, (int, float)) and isinstance(daily_points, int):
+        lines.append(f"Daily MAPE: {daily_mape:.2%} across {daily_points} trading days")
     lines.append("")
 
     lines.append("Finance Bro")
