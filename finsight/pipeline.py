@@ -1,11 +1,10 @@
 """FinSight multi-agent pipeline implementation."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # Optional heavy dependencies (gracefully skipped when unavailable)
     import pandas as pd  # type: ignore
@@ -13,30 +12,6 @@ try:  # Optional heavy dependencies (gracefully skipped when unavailable)
 except ModuleNotFoundError:  # pragma: no cover - handled via fallback data
     pd = None
     yf = None
-
-try:  # LangChain powers the orchestrator when available
-    from langchain.schema.runnable import RunnableLambda
-except ModuleNotFoundError:  # pragma: no cover - provide a tiny fallback for offline demos
-    class RunnableLambda:  # type: ignore[no-redef]
-        """Minimal drop-in replacement for LangChain's RunnableLambda."""
-
-        def __init__(self, func):
-            self._func = func
-
-        def invoke(self, input_):
-            return self._func(input_)
-
-        def __call__(self, input_):  # pragma: no cover - mirrors LangChain API
-            return self.invoke(input_)
-
-        def __or__(self, other):
-            return RunnableLambda(lambda value: other.invoke(self.invoke(value)))
-
-try:  # Pinecone is optional but encouraged when an API key is present
-    from pinecone import Pinecone, ServerlessSpec  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - handled by local memory store
-    Pinecone = None  # type: ignore
-    ServerlessSpec = None  # type: ignore
 
 
 @dataclass
@@ -46,14 +21,6 @@ class AnnualMetric:
     year: int
     avg_return: float
     volatility: float
-
-
-@dataclass
-class DataSourceReport:
-    """Details about how the annual metrics were sourced."""
-
-    source: str
-    note: str
 
 
 @dataclass
@@ -68,85 +35,6 @@ class AgentOutput:
     finance_bro_summary: str
     refinement_suggestions: List[str]
     chart_path: Optional[str]
-    mr_white_briefing: str
-    vector_store_status: str
-    data_source_report: DataSourceReport
-
-
-StageLogger = Callable[[str, Dict[str, object]], None]
-
-
-class ContextVectorStore:
-    """Minimal Pinecone facade that falls back to in-memory storage when offline."""
-
-    def __init__(self, index_name: str = "finsight-market-events", dimension: int = 8):
-        self.index_name = index_name
-        self.dimension = dimension
-        self._status = "pinecone_disabled"
-        self._client = None
-        self._index = None
-        self._memory: Dict[str, Dict[str, object]] = {}
-
-        api_key = os.getenv("PINECONE_API_KEY")
-        region = os.getenv("PINECONE_REGION", "us-east-1")
-        if Pinecone is not None and api_key:
-            self._client = Pinecone(api_key=api_key)
-            try:
-                self._client.describe_index(self.index_name)
-            except Exception:
-                if ServerlessSpec is None:  # pragma: no cover - safety guard
-                    raise RuntimeError("pinecone-serverless missing; upgrade pinecone-client.")
-                self._client.create_index(
-                    name=self.index_name,
-                    dimension=self.dimension,
-                    metric="cosine",
-                    spec=ServerlessSpec(cloud="aws", region=region),
-                )
-            self._index = self._client.Index(self.index_name)
-            self._status = f"pinecone_serverless:{region}"
-        else:
-            self._status = "pinecone_local_memory"
-
-    @property
-    def status(self) -> str:
-        return self._status
-
-    def _embed_text(self, text: str) -> List[float]:
-        seed = abs(hash(text))
-        vector = []
-        for i in range(self.dimension):
-            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-            vector.append((seed % 1000) / 1000.0)
-        return vector
-
-    def upsert_batch(self, summaries: Dict[int, List[str]]) -> None:
-        for year, events in summaries.items():
-            text = " ".join(events)
-            vector = self._embed_text(text or str(year))
-            payload = {"id": str(year), "values": vector, "metadata": {"year": year, "events": events}}
-            if self._index is not None:
-                self._index.upsert(vectors=[payload])
-            else:
-                self._memory[str(year)] = payload
-
-    def fetch_context(self, years: Iterable[int]) -> Dict[int, List[str]]:
-        result: Dict[int, List[str]] = {}
-        ids = [str(year) for year in years]
-        if self._index is not None:
-            response = self._index.fetch(ids=ids)
-            vectors = response.get("vectors", {}) if isinstance(response, dict) else {}
-            for key, record in vectors.items():
-                metadata = record.get("metadata") or {}
-                events = metadata.get("events") or []
-                result[int(key)] = list(events)
-        else:
-            for key in ids:
-                payload = self._memory.get(key)
-                if payload:
-                    metadata = payload.get("metadata", {})
-                    events = metadata.get("events") or []
-                    result[int(key)] = list(events)
-        return result
 
 
 def _compute_metrics_from_history(history: "pd.DataFrame") -> List[AnnualMetric]:  # pragma: no cover - only runs when pandas is installed
@@ -178,45 +66,27 @@ def _load_cached_metrics() -> List[AnnualMetric]:
     ]
 
 
-def collect_sp500_data(
-    start: str = "2015-01-01", end: str = "2022-12-31"
-) -> Tuple[List[AnnualMetric], DataSourceReport]:
+def collect_sp500_data(start: str = "2015-01-01", end: str = "2022-12-31") -> Tuple[List[AnnualMetric], str]:
     """Download S&P 500 data and compute annual metrics.
 
     Falls back to a cached JSON snapshot when yfinance/pandas are unavailable.
-    Returns a tuple of (metrics, DataSourceReport).
+    Returns a tuple of (metrics, source_label).
     """
 
-    failure_reasons: List[str] = []
     if pd is not None and yf is not None:
         try:
             ticker = yf.Ticker("^GSPC")
             history = ticker.history(start=start, end=end)
             if not history.empty:
-                metrics = _compute_metrics_from_history(history)
-                note = (
-                    "Live ^GSPC download succeeded via yfinance and was cleaned with pandas"
-                )
-                return metrics, DataSourceReport(source="yfinance", note=note)
-            failure_reasons.append("yfinance returned an empty frame")
-        except Exception as exc:  # pragma: no cover - depends on network state
-            failure_reasons.append(f"yfinance error: {exc.__class__.__name__}: {exc}")
-    else:
-        failure_reasons.append("pandas/yfinance not installed")
+                return _compute_metrics_from_history(history), "yfinance"
+        except Exception:
+            pass  # Fallback handled below
 
-    metrics = _load_cached_metrics()
-    reason_suffix = f" because {'; '.join(failure_reasons)}" if failure_reasons else ""
-    note = (
-        "Used cached snapshot derived from the same Yahoo Finance pulls"
-        f"{reason_suffix}."
-    )
-    return metrics, DataSourceReport(source="cached_snapshot", note=note)
+    return _load_cached_metrics(), "cached_snapshot"
 
 
-def research_macro_events(
-    years: Iterable[int], vector_store: Optional[ContextVectorStore] = None
-) -> Tuple[Dict[int, List[str]], str]:
-    """Return the top three macro events and store them inside Pinecone."""
+def research_macro_events(years: Iterable[int]) -> Dict[int, List[str]]:
+    """Return the top three macro events per year (placeholder implementation)."""
 
     summaries = {
         2015: [
@@ -245,16 +115,7 @@ def research_macro_events(
             "Tech leadership returned despite valuation concerns",
         ],
     }
-
-    filtered = {year: summaries.get(year, []) for year in years}
-    vector_status = "vector_store_disabled"
-    if vector_store is not None:
-        vector_store.upsert_batch(filtered)
-        stored = vector_store.fetch_context(years)
-        filtered = {year: stored.get(year) or filtered.get(year, []) for year in years}
-        vector_status = vector_store.status
-
-    return filtered, vector_status
+    return {year: summaries.get(year, []) for year in years}
 
 
 def _filter_metrics(annual_metrics: Sequence[AnnualMetric], years: Iterable[int]) -> List[AnnualMetric]:
@@ -262,12 +123,10 @@ def _filter_metrics(annual_metrics: Sequence[AnnualMetric], years: Iterable[int]
     return [metric for metric in annual_metrics if metric.year in year_set]
 
 
-def build_prediction_payload(
-    annual_metrics: Sequence[AnnualMetric], context: Dict[int, List[str]]
-) -> Dict[str, object]:
+def build_prediction_payload(annual_metrics: Sequence[AnnualMetric], context_years: Iterable[int]) -> Dict[str, object]:
     """Create the structured payload for the Prediction Agent."""
 
-    context_years = context.keys()
+    context = research_macro_events(context_years)
     metrics = _filter_metrics(annual_metrics, context_years)
     if not metrics:
         raise ValueError("No historical metrics available for prediction payload.")
@@ -440,51 +299,6 @@ def refinement_agent(evaluation: Dict[str, object], finance_summary: str) -> Lis
     return suggestions
 
 
-def mr_white_agent(
-    annual_metrics: Sequence[AnnualMetric],
-    context: Dict[int, List[str]],
-    predictions: Dict[int, float],
-    evaluation: Dict[str, object],
-    finance_summary: str,
-    refinement_suggestions: Sequence[str],
-    vector_store_status: str,
-    data_source_report: DataSourceReport,
-) -> str:
-    """Explain the architecture to a curious student in a didactic tone."""
-
-    data_source = data_source_report.source
-    mae = evaluation.get("MAE")
-    hardest_year = evaluation.get("hardest_year")
-    hardest_reason = evaluation.get("hardest_year_reason")
-    years_span = f"{min(metric.year for metric in annual_metrics)}–{max(metric.year for metric in annual_metrics)}"
-
-    context_years = ", ".join(str(year) for year in sorted(context))
-
-    return "\n".join(
-        [
-            "Hey there, apprentice — Mr. White here.",
-            "We built FinSight as a relay race of specialists so you can trace every decision:",
-            "1. A LangChain Runnable sequence kicks off the show so every agent hands a structured state to the next.",
-            "2. DataCollector grabs ^GSPC closes via yfinance (or our cached snapshot when offline) and distills",
-            f"   them into AnnualMetric objects covering {years_span}. That cache is the same Yahoo Finance data,",
-            "   just frozen for reproducibility, so quality stays aligned with a widely trusted public feed.",
-            f"3. Research Agent pins three macro story beats to each pre-pandemic year ({context_years}) and pushes",
-            f"   them through a Pinecone vector store ({vector_store_status}) so later agents can query a real RAG memory.",
-            "4. Prediction Agent studies those 2015–2019 patterns and drafts 2020–2022 calls with narratives.",
-            "5. Evaluator cross-checks predictions against actual returns, reports MAE and toughest year,",
-            f"   which this run pegs at {mae:.2%} average error with {hardest_year} hardest because {hardest_reason}.",
-            "6. Finance Bro translates that into street language and points everyone to the SVG comparison chart.",
-            "7. Refinement Agent turns the misses into a backlog of upgrades so the next version learns.",
-            "8. Test Titan enforces contracts (no missing years, numeric MAE) before anyone declares victory.",
-            "9. Lord of the Mysteries packages everything and I, Mr. White, narrate the architecture so your",
-            "   curious mind sees how multi-agent orchestration feels in practice.",
-            f"Data source this round: {data_source}. {data_source_report.note}",
-            f"Finance Bro's verdict: {finance_summary}",
-            "Next experiments on deck: " + "; ".join(refinement_suggestions),
-        ]
-    )
-
-
 def test_titan_agent(
     annual_metrics: Sequence[AnnualMetric], predictions: Dict[int, float], evaluation: Dict[str, object]
 ) -> None:
@@ -509,171 +323,30 @@ def test_titan_agent(
     print("All tests passed ✅")
 
 
-def _collect_step(state: Dict[str, object]) -> Dict[str, object]:
-    annual_metrics, data_source_report = collect_sp500_data()
-    state["annual_metrics"] = annual_metrics
-    state["data_source_report"] = data_source_report
-    return state
+def run_pipeline() -> AgentOutput:
+    """Execute the FinSight workflow end-to-end."""
 
-
-def _context_step(state: Dict[str, object]) -> Dict[str, object]:
-    vector_store: ContextVectorStore = state["vector_store"]  # type: ignore[assignment]
-    years = state.get("context_years", [])
-    context, status = research_macro_events(years, vector_store=vector_store)
-    state["context"] = context
-    state["vector_store_status"] = status
-    return state
-
-
-def _payload_step(state: Dict[str, object]) -> Dict[str, object]:
-    annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
-    context: Dict[int, List[str]] = state["context"]  # type: ignore[assignment]
-    state["payload"] = build_prediction_payload(annual_metrics, context)
-    return state
-
-
-def _prediction_step(state: Dict[str, object]) -> Dict[str, object]:
-    payload: Dict[str, object] = state["payload"]  # type: ignore[assignment]
+    annual_metrics, data_source = collect_sp500_data()
+    payload = build_prediction_payload(annual_metrics, context_years=range(2015, 2020))
     predictions, rationales = prediction_agent(payload)
-    state["predictions"] = predictions
-    state["rationales"] = rationales
-    return state
-
-
-def _evaluation_step(state: Dict[str, object]) -> Dict[str, object]:
-    predictions: Dict[int, float] = state["predictions"]  # type: ignore[assignment]
-    annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
     evaluation = evaluator_agent(predictions, annual_metrics)
-    data_report: DataSourceReport = state["data_source_report"]  # type: ignore[assignment]
-    evaluation["data_source"] = data_report.source
-    state["evaluation"] = evaluation
-    return state
-
-
-def _chart_step(state: Dict[str, object]) -> Dict[str, object]:
-    details: Sequence[Dict[str, float]] = state["evaluation"]["details"]  # type: ignore[index]
-    state["chart_path"] = generate_prediction_chart(details)
-    return state
-
-
-def _finance_step(state: Dict[str, object]) -> Dict[str, object]:
-    evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
-    chart_path: Optional[str] = state.get("chart_path")
-    state["finance_bro_summary"] = finance_bro_agent(evaluation, chart_path)
-    return state
-
-
-def _refinement_step(state: Dict[str, object]) -> Dict[str, object]:
-    evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
-    summary: str = state["finance_bro_summary"]  # type: ignore[assignment]
-    state["refinement_suggestions"] = refinement_agent(evaluation, summary)
-    return state
-
-
-def _test_step(state: Dict[str, object]) -> Dict[str, object]:
-    annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
-    predictions: Dict[int, float] = state["predictions"]  # type: ignore[assignment]
-    evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
+    chart_path = generate_prediction_chart(evaluation["details"])
+    finance_summary = finance_bro_agent(evaluation, chart_path)
+    suggestions = refinement_agent(evaluation, finance_summary)
     test_titan_agent(annual_metrics, predictions, evaluation)
-    return state
 
-
-def _mentor_step(state: Dict[str, object]) -> Dict[str, object]:
-    annual_metrics: Sequence[AnnualMetric] = state["annual_metrics"]  # type: ignore[assignment]
-    context: Dict[int, List[str]] = state["context"]  # type: ignore[assignment]
-    predictions: Dict[int, float] = state["predictions"]  # type: ignore[assignment]
-    evaluation: Dict[str, object] = state["evaluation"]  # type: ignore[assignment]
-    finance_summary: str = state["finance_bro_summary"]  # type: ignore[assignment]
-    suggestions: Sequence[str] = state["refinement_suggestions"]  # type: ignore[assignment]
-    vector_store_status: str = state["vector_store_status"]  # type: ignore[assignment]
-    data_report: DataSourceReport = state["data_source_report"]  # type: ignore[assignment]
-    state["mr_white_briefing"] = mr_white_agent(
-        annual_metrics,
-        context,
-        predictions,
-        evaluation,
-        finance_summary,
-        suggestions,
-        vector_store_status,
-        data_report,
-    )
-    return state
-
-
-def _wrap_stage(stage_name: str, func: Callable[[Dict[str, object]], Dict[str, object]], stage_logger: Optional[StageLogger]):
-    def wrapped(state: Dict[str, object]) -> Dict[str, object]:
-        updated = func(state)
-        if stage_logger:
-            stage_logger(stage_name, updated)
-        return updated
-
-    return wrapped
-
-
-def _bootstrap_state(
-    vector_store: ContextVectorStore, context_years: Sequence[int], stage_logger: Optional[StageLogger]
-) -> Callable[[Dict[str, object]], Dict[str, object]]:
-    def bootstrap(_: Dict[str, object]) -> Dict[str, object]:
-        state = {"vector_store": vector_store, "context_years": list(context_years)}
-        if stage_logger:
-            stage_logger("bootstrap", state)
-        return state
-
-    return bootstrap
-
-
-def build_langchain_chain(
-    *,
-    vector_store: Optional[ContextVectorStore] = None,
-    context_years: Optional[Sequence[int]] = None,
-    stage_logger: Optional[StageLogger] = None,
-):
-    """Expose the LangChain Runnable sequence so scripts can inspect every hop."""
-
-    vector_store = vector_store or ContextVectorStore()
-    years = list(context_years or range(2015, 2020))
-
-    orchestrator = (
-        RunnableLambda(_bootstrap_state(vector_store, years, stage_logger))
-        | RunnableLambda(_wrap_stage("collect", _collect_step, stage_logger))
-        | RunnableLambda(_wrap_stage("context", _context_step, stage_logger))
-        | RunnableLambda(_wrap_stage("payload", _payload_step, stage_logger))
-        | RunnableLambda(_wrap_stage("prediction", _prediction_step, stage_logger))
-        | RunnableLambda(_wrap_stage("evaluation", _evaluation_step, stage_logger))
-        | RunnableLambda(_wrap_stage("chart", _chart_step, stage_logger))
-        | RunnableLambda(_wrap_stage("finance", _finance_step, stage_logger))
-        | RunnableLambda(_wrap_stage("refinement", _refinement_step, stage_logger))
-        | RunnableLambda(_wrap_stage("test", _test_step, stage_logger))
-        | RunnableLambda(_wrap_stage("mentor", _mentor_step, stage_logger))
-    )
-
-    return orchestrator
-
-
-def state_to_agent_output(state: Dict[str, object]) -> AgentOutput:
-    """Convert the LangChain state dict into a structured AgentOutput."""
+    evaluation = {**evaluation, "data_source": data_source}
 
     return AgentOutput(
-        annual_metrics=state["annual_metrics"],
-        context=state["context"],
-        predictions=state["predictions"],
-        rationales=state["rationales"],
-        evaluation=state["evaluation"],
-        finance_bro_summary=state["finance_bro_summary"],
-        refinement_suggestions=state["refinement_suggestions"],
-        chart_path=state.get("chart_path"),
-        mr_white_briefing=state["mr_white_briefing"],
-        vector_store_status=state["vector_store_status"],
-        data_source_report=state["data_source_report"],
+        annual_metrics=annual_metrics,
+        context=payload["context"],
+        predictions=predictions,
+        rationales=rationales,
+        evaluation=evaluation,
+        finance_bro_summary=finance_summary,
+        refinement_suggestions=suggestions,
+        chart_path=chart_path,
     )
-
-
-def run_pipeline(stage_logger: Optional[StageLogger] = None) -> AgentOutput:
-    """Execute the FinSight workflow end-to-end via a LangChain Runnable pipeline."""
-
-    orchestrator = build_langchain_chain(stage_logger=stage_logger)
-    state = orchestrator.invoke({})
-    return state_to_agent_output(state)
 
 
 if __name__ == "__main__":
